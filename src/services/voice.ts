@@ -10,114 +10,108 @@ import {
     StreamType,
 } from '@discordjs/voice';
 import { VoiceBasedChannel, GuildMember } from 'discord.js';
-import { spawn, execSync } from 'child_process';
 import { spotifyService, CurrentlyPlaying } from './spotify';
-import ffmpegPath from 'ffmpeg-static';
+import play, { SoundCloudTrack, YouTubeStream, SoundCloudStream } from 'play-dl';
 
-// Set ffmpeg path for prism-media (used by @discordjs/voice)
-if (ffmpegPath) {
-    process.env.FFMPEG_PATH = ffmpegPath;
+// Initialize play-dl (no auth required for YouTube search)
+let playDlInitialized = false;
+
+async function initPlayDl(): Promise<void> {
+    if (playDlInitialized) return;
+    
+    try {
+        // Set YouTube as primary source
+        await play.setToken({
+            youtube: { cookie: '' } // Empty cookie works for basic searches
+        });
+        playDlInitialized = true;
+        console.log('play-dl initialized successfully');
+    } catch (error) {
+        console.log('play-dl init warning (continuing anyway):', error);
+        playDlInitialized = true;
+    }
 }
 
-// Find yt-dlp binary - check common locations
-function getYtdlpPath(): string {
-    const paths = [
-        '/usr/local/bin/yt-dlp',      // Docker/Linux
-        '/opt/homebrew/bin/yt-dlp',   // macOS Homebrew (Apple Silicon)
-        '/usr/bin/yt-dlp',            // Linux package manager
-        'yt-dlp'                       // System PATH
-    ];
-    
-    for (const p of paths) {
-        try {
-            execSync(`${p} --version`, { stdio: 'ignore' });
-            console.log(`Found yt-dlp at: ${p}`);
-            return p;
-        } catch {}
+// Search YouTube using play-dl (primary source - worked in dev)
+async function searchYouTube(query: string): Promise<{ url: string; source: 'youtube' } | null> {
+    try {
+        await initPlayDl();
+        
+        console.log(`Searching YouTube for: ${query}`);
+        const results = await play.search(query, { 
+            source: { youtube: 'video' },
+            limit: 1 
+        });
+        
+        if (results.length > 0) {
+            console.log(`YouTube found: ${results[0].title} - ${results[0].url}`);
+            return { url: results[0].url, source: 'youtube' };
+        }
+        
+        console.log(`No YouTube results for: ${query}`);
+        return null;
+    } catch (error) {
+        console.error('YouTube search error:', error);
+        return null;
+    }
+}
+
+// Search SoundCloud using play-dl (fallback source)
+async function searchSoundCloud(query: string): Promise<{ url: string; source: 'soundcloud' } | null> {
+    try {
+        await initPlayDl();
+        
+        console.log(`Searching SoundCloud for: ${query}`);
+        const results = await play.search(query, { 
+            source: { soundcloud: 'tracks' },
+            limit: 1 
+        });
+        
+        if (results.length > 0) {
+            const track = results[0] as SoundCloudTrack;
+            console.log(`SoundCloud found: ${track.name} - ${track.url}`);
+            return { url: track.url, source: 'soundcloud' };
+        }
+        
+        console.log(`No SoundCloud results for: ${query}`);
+        return null;
+    } catch (error) {
+        console.error('SoundCloud search error:', error);
+        return null;
+    }
+}
+
+// Search for audio - YouTube primary, SoundCloud fallback
+async function searchAudio(query: string): Promise<{ url: string; source: 'youtube' | 'soundcloud' } | null> {
+    // Try YouTube first (primary source - worked in dev)
+    const youtubeResult = await searchYouTube(query);
+    if (youtubeResult) {
+        return youtubeResult;
     }
     
-    console.log('yt-dlp not found in common paths, using PATH');
-    return 'yt-dlp'; // Fallback to PATH
-}
-
-const ytdlpPath = getYtdlpPath();
-
-// List of Piped instances to try (more reliable than Invidious)
-const PIPED_INSTANCES = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.adminforge.de',
-    'https://api.piped.yt',
-    'https://pipedapi.in.projectsegfau.lt',
-];
-
-// Search YouTube using yt-dlp and return the video URL
-async function searchYouTube(query: string): Promise<string | null> {
-    return new Promise((resolve) => {
-        try {
-            // Use yt-dlp to search YouTube and get the first result's URL
-            const result = execSync(
-                `${ytdlpPath} --no-warnings --flat-playlist --print url "ytsearch1:${query}"`,
-                { encoding: 'utf-8', timeout: 15000 }
-            ).trim();
-            
-            if (result && result.startsWith('http')) {
-                console.log(`YouTube search found: ${result}`);
-                resolve(result);
-            } else {
-                console.log(`YouTube search returned no results for: ${query}`);
-                resolve(null);
-            }
-        } catch (error) {
-            console.error('YouTube search error:', error);
-            resolve(null);
-        }
-    });
-}
-
-// Get audio stream URL from Piped API (more reliable than Invidious)
-async function getAudioFromPiped(videoId: string): Promise<string | null> {
-    for (const instance of PIPED_INSTANCES) {
-        try {
-            console.log(`Trying Piped instance: ${instance}`);
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-            
-            const response = await fetch(`${instance}/streams/${videoId}`, {
-                signal: controller.signal,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            });
-            clearTimeout(timeoutId);
-            
-            if (!response.ok) {
-                console.log(`Piped ${instance} returned ${response.status}`);
-                continue;
-            }
-            
-            const data = await response.json() as any;
-            
-            // Get audio streams
-            const audioStreams = data.audioStreams || [];
-            
-            if (audioStreams.length > 0) {
-                // Sort by bitrate and get highest quality audio
-                audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-                const audioUrl = audioStreams[0].url;
-                console.log(`Got audio from Piped (${instance}): bitrate ${audioStreams[0].bitrate}`);
-                return audioUrl;
-            }
-        } catch (error: any) {
-            console.log(`Piped instance ${instance} failed: ${error.message}`);
-        }
+    // Fallback to SoundCloud
+    console.log('YouTube failed, trying SoundCloud...');
+    const soundcloudResult = await searchSoundCloud(query);
+    if (soundcloudResult) {
+        return soundcloudResult;
     }
+    
     return null;
 }
 
-// Extract video ID from YouTube URL
-function extractVideoId(url: string): string | null {
-    const match = url.match(/(?:v=|\/)([\w-]{11})(?:\?|&|$)/);
-    return match ? match[1] : null;
+// Get audio stream from URL using play-dl
+async function getAudioStream(url: string, source: 'youtube' | 'soundcloud'): Promise<YouTubeStream | SoundCloudStream | null> {
+    try {
+        await initPlayDl();
+        
+        console.log(`Getting ${source} stream for: ${url}`);
+        const stream = await play.stream(url);
+        console.log(`Stream created: type=${stream.type}`);
+        return stream;
+    } catch (error) {
+        console.error(`Error getting ${source} stream:`, error);
+        return null;
+    }
 }
 
 interface VoiceSession {
@@ -313,88 +307,34 @@ class VoiceManager {
         if (!session || !track.trackUrl) return;
 
         try {
-            // Search for the track on YouTube using yt-dlp
+            // Search for the track - YouTube primary, SoundCloud fallback
             const searchQuery = `${track.trackName} ${track.artistName} audio`;
-            console.log(`Searching YouTube for: ${searchQuery}`);
+            console.log(`Searching for audio: ${searchQuery}`);
             
-            const videoUrl = await searchYouTube(searchQuery);
+            const audioResult = await searchAudio(searchQuery);
             
-            if (!videoUrl) {
-                console.log(`No YouTube results found for: ${searchQuery}`);
+            if (!audioResult) {
+                console.log(`No audio results found for: ${searchQuery}`);
                 return;
             }
 
-            const videoId = extractVideoId(videoUrl);
-            console.log(`Found YouTube video: ${videoUrl} (ID: ${videoId})`);
+            console.log(`Found on ${audioResult.source}: ${audioResult.url}`);
             
-            // Try to get audio URL from Piped first (bypasses YouTube bot detection)
-            let audioUrl: string | null = null;
-            if (videoId) {
-                audioUrl = await getAudioFromPiped(videoId);
+            // Get audio stream using play-dl
+            const stream = await getAudioStream(audioResult.url, audioResult.source);
+            
+            if (!stream) {
+                console.log(`Failed to get stream for: ${audioResult.url}`);
+                return;
             }
 
-            if (audioUrl) {
-                // Stream directly from Piped audio URL using ffmpeg
-                console.log('Streaming from Piped...');
-                const ffmpegProcess = spawn(ffmpegPath || 'ffmpeg', [
-                    '-i', audioUrl,
-                    '-f', 's16le',
-                    '-ar', '48000',
-                    '-ac', '2',
-                    'pipe:1'
-                ], { stdio: ['ignore', 'pipe', 'pipe'] });
+            const resource = createAudioResource(stream.stream, {
+                inputType: stream.type,
+            });
 
-                ffmpegProcess.stderr.on('data', (data) => {
-                    // Only log errors, not progress
-                    const msg = data.toString();
-                    if (msg.includes('Error') || msg.includes('error')) {
-                        console.log(`ffmpeg: ${msg}`);
-                    }
-                });
-
-                const resource = createAudioResource(ffmpegProcess.stdout, {
-                    inputType: StreamType.Raw,
-                });
-
-                session.player.play(resource);
-                session.currentTrackUrl = track.trackUrl;
-                console.log(`Now playing (via Invidious): ${track.trackName} by ${track.artistName}`);
-            } else {
-                // Fallback to yt-dlp (may fail with bot detection)
-                console.log('Invidious failed, trying yt-dlp directly...');
-                
-                const ytdlpArgs = [
-                    '-f', 'bestaudio',
-                    '-o', '-',
-                    '--no-warnings',
-                    '--no-playlist',
-                    '--extractor-args', 'youtube:player_client=android',
-                ];
-                
-                if (ffmpegPath) {
-                    ytdlpArgs.push('--ffmpeg-location', ffmpegPath);
-                }
-                
-                ytdlpArgs.push(videoUrl);
-                
-                const ytdlProcess = spawn(ytdlpPath, ytdlpArgs);
-
-                ytdlProcess.stderr.on('data', (data) => {
-                    console.log(`yt-dlp: ${data.toString()}`);
-                });
-
-                ytdlProcess.on('error', (error) => {
-                    console.error('yt-dlp process error:', error);
-                });
-
-                const resource = createAudioResource(ytdlProcess.stdout, {
-                    inputType: StreamType.Arbitrary,
-                });
-
-                session.player.play(resource);
-                session.currentTrackUrl = track.trackUrl;
-                console.log(`Now playing (via yt-dlp): ${track.trackName} by ${track.artistName}`);
-            }
+            session.player.play(resource);
+            session.currentTrackUrl = track.trackUrl;
+            console.log(`Now playing (via ${audioResult.source}): ${track.trackName} by ${track.artistName}`);
         } catch (error) {
             console.error('Error playing track:', error);
         }
