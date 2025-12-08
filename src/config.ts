@@ -28,6 +28,8 @@ export function validateConfig(): void {
     const missing = required.filter((key) => !process.env[key]);
 
     if (missing.length > 0) {
-        throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+        console.error(`⚠️ Missing required environment variables: ${missing.join(', ')}`);
+        console.error('Bot functionality will be limited until these are configured.');
+        // Don't throw - let the server start for Cloud Run health checks
     }
 }

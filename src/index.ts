@@ -74,10 +74,10 @@ client.once(Events.ClientReady, (readyClient) => {
 
 // Start the bot
 async function main(): Promise<void> {
-    try {
-        // Start OAuth callback server
-        startServer();
+    // Start OAuth callback server FIRST - Cloud Run needs this to pass health checks
+    startServer();
 
+    try {
         // Register commands
         await registerCommands();
 
@@ -85,7 +85,8 @@ async function main(): Promise<void> {
         await client.login(config.discord.token);
     } catch (error) {
         console.error('Failed to start bot:', error);
-        process.exit(1);
+        // Don't exit - keep server running for Cloud Run health checks
+        console.error('Bot functionality may be limited, but server is still running.');
     }
 }
 

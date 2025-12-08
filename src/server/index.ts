@@ -56,8 +56,15 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Root endpoint for basic connectivity check
+app.get('/', (req, res) => {
+    res.json({ status: 'ok', service: 'Discord Spotify Bot' });
+});
+
 export function startServer(): void {
-    app.listen(config.server.port, () => {
-        console.log(`OAuth callback server running on http://localhost:${config.server.port}`);
+    // Bind to 0.0.0.0 for Cloud Run (required for external access)
+    const host = '0.0.0.0';
+    app.listen(config.server.port, host, () => {
+        console.log(`OAuth callback server running on http://${host}:${config.server.port}`);
     });
 }
