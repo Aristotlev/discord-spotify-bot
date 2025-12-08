@@ -19,17 +19,11 @@ if (ffmpegPath) {
     process.env.FFMPEG_PATH = ffmpegPath;
 }
 
-// Dynamic import for ESM-only youtubei.js module
-async function createInnertube() {
-    const { Innertube } = await import('youtubei.js');
-    return Innertube.create();
-}
-
 // Find yt-dlp binary - check common locations
 function getYtdlpPath(): string {
     const paths = [
-        '/opt/homebrew/bin/yt-dlp',  // macOS Homebrew (Apple Silicon)
-        '/usr/local/bin/yt-dlp',      // macOS Homebrew (Intel) / Linux
+        '/usr/local/bin/yt-dlp',      // Docker/Linux
+        '/opt/homebrew/bin/yt-dlp',   // macOS Homebrew (Apple Silicon)
         '/usr/bin/yt-dlp',            // Linux package manager
         'yt-dlp'                       // System PATH
     ];
@@ -37,23 +31,39 @@ function getYtdlpPath(): string {
     for (const p of paths) {
         try {
             execSync(`${p} --version`, { stdio: 'ignore' });
+            console.log(`Found yt-dlp at: ${p}`);
             return p;
         } catch {}
     }
     
+    console.log('yt-dlp not found in common paths, using PATH');
     return 'yt-dlp'; // Fallback to PATH
 }
 
 const ytdlpPath = getYtdlpPath();
 
-// Cached Innertube instance for search
-let innertube: Awaited<ReturnType<typeof createInnertube>> | null = null;
-
-async function getInnertube() {
-    if (!innertube) {
-        innertube = await createInnertube();
-    }
-    return innertube;
+// Search YouTube using yt-dlp and return the video URL
+async function searchYouTube(query: string): Promise<string | null> {
+    return new Promise((resolve) => {
+        try {
+            // Use yt-dlp to search YouTube and get the first result's URL
+            const result = execSync(
+                `${ytdlpPath} --no-warnings --flat-playlist --print url "ytsearch1:${query}"`,
+                { encoding: 'utf-8', timeout: 15000 }
+            ).trim();
+            
+            if (result && result.startsWith('http')) {
+                console.log(`YouTube search found: ${result}`);
+                resolve(result);
+            } else {
+                console.log(`YouTube search returned no results for: ${query}`);
+                resolve(null);
+            }
+        } catch (error) {
+            console.error('YouTube search error:', error);
+            resolve(null);
+        }
+    });
 }
 
 interface VoiceSession {
@@ -249,31 +259,20 @@ class VoiceManager {
         if (!session || !track.trackUrl) return;
 
         try {
-            const yt = await getInnertube();
-            
-            // Search for the track on YouTube using youtubei.js
+            // Search for the track on YouTube using yt-dlp
             const searchQuery = `${track.trackName} ${track.artistName} audio`;
             console.log(`Searching YouTube for: ${searchQuery}`);
             
-            const searchResults = await yt.search(searchQuery, { type: 'video' });
+            const videoUrl = await searchYouTube(searchQuery);
             
-            if (!searchResults.results || searchResults.results.length === 0) {
+            if (!videoUrl) {
                 console.log(`No YouTube results found for: ${searchQuery}`);
                 return;
             }
 
-            // Find the first video result
-            const firstVideo = searchResults.results.find((r: any) => r.type === 'Video') as any;
-            if (!firstVideo || !firstVideo.id) {
-                console.log(`No video found in results for: ${searchQuery}`);
-                return;
-            }
-
-            const videoUrl = `https://www.youtube.com/watch?v=${firstVideo.id}`;
-            console.log(`Found YouTube video: ${firstVideo.title?.text} (${firstVideo.id})`);
+            console.log(`Found YouTube video: ${videoUrl}`);
             
             // Spawn yt-dlp process to stream audio directly
-            // Use ffmpeg-static if system ffmpeg is not available
             const ytdlpArgs = [
                 '-f', 'bestaudio',
                 '-o', '-',
