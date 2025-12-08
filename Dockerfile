@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Cache buster - change this to force npm reinstall
+ARG CACHEBUST=2
+
 # Copy package files
 COPY package*.json ./
 
