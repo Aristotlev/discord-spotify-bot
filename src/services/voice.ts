@@ -12,6 +12,12 @@ import {
 import { VoiceBasedChannel, GuildMember } from 'discord.js';
 import { spawn, execSync } from 'child_process';
 import { spotifyService, CurrentlyPlaying } from './spotify';
+import ffmpegPath from 'ffmpeg-static';
+
+// Set ffmpeg path for prism-media (used by @discordjs/voice)
+if (ffmpegPath) {
+    process.env.FFMPEG_PATH = ffmpegPath;
+}
 
 // Dynamic import for ESM-only youtubei.js module
 async function createInnertube() {
@@ -95,9 +101,28 @@ class VoiceManager {
                 selfMute: false,
             });
 
+            // Add connection state change logging
+            connection.on('stateChange', (oldState, newState) => {
+                console.log(`Voice connection state: ${oldState.status} -> ${newState.status}`);
+            });
+
+            connection.on('error', (error) => {
+                console.error('Voice connection error:', error);
+            });
+
             await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
 
             const player = createAudioPlayer();
+            
+            // Add player state change logging
+            player.on('stateChange', (oldState, newState) => {
+                console.log(`Audio player state: ${oldState.status} -> ${newState.status}`);
+            });
+
+            player.on('error', (error) => {
+                console.error('Audio player error:', error);
+            });
+
             connection.subscribe(player);
 
             const session: VoiceSession = {
@@ -119,9 +144,10 @@ class VoiceManager {
             };
         } catch (error) {
             console.error('Error connecting to voice channel:', error);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             return {
                 success: false,
-                message: 'Failed to connect to voice channel.',
+                message: `Failed to connect to voice channel: ${errorMessage}`,
             };
         }
     }
@@ -181,33 +207,40 @@ class VoiceManager {
         const session = this.sessions.get(guildId);
         if (!session) return;
 
-        const currentlyPlaying = await spotifyService.getCurrentlyPlaying(
-            session.controllingUserId
-        );
+        try {
+            const currentlyPlaying = await spotifyService.getCurrentlyPlaying(
+                session.controllingUserId
+            );
 
-        if (!currentlyPlaying) {
-            // Nothing playing, stop if something is playing
-            if (session.player.state.status !== AudioPlayerStatus.Idle) {
-                session.player.stop();
-                session.currentTrackUrl = null;
+            if (!currentlyPlaying) {
+                // Nothing playing, stop if something is playing
+                if (session.player.state.status !== AudioPlayerStatus.Idle) {
+                    console.log('Spotify: Nothing playing, stopping audio');
+                    session.player.stop();
+                    session.currentTrackUrl = null;
+                }
+                return;
             }
-            return;
-        }
+            
+            console.log(`Spotify sync: ${currentlyPlaying.trackName} - Playing: ${currentlyPlaying.isPlaying}`);
 
-        if (!currentlyPlaying.isPlaying) {
-            // Paused on Spotify
-            if (session.player.state.status === AudioPlayerStatus.Playing) {
-                session.player.pause();
+            if (!currentlyPlaying.isPlaying) {
+                // Paused on Spotify
+                if (session.player.state.status === AudioPlayerStatus.Playing) {
+                    session.player.pause();
+                }
+                return;
             }
-            return;
-        }
 
-        // If playing and it's a different track, play it
-        if (currentlyPlaying.trackUrl && currentlyPlaying.trackUrl !== session.currentTrackUrl) {
-            await this.playTrack(guildId, currentlyPlaying);
-        } else if (session.player.state.status === AudioPlayerStatus.Paused) {
-            // Resume if was paused
-            session.player.unpause();
+            // If playing and it's a different track, play it
+            if (currentlyPlaying.trackUrl && currentlyPlaying.trackUrl !== session.currentTrackUrl) {
+                await this.playTrack(guildId, currentlyPlaying);
+            } else if (session.player.state.status === AudioPlayerStatus.Paused) {
+                // Resume if was paused
+                session.player.unpause();
+            }
+        } catch (error) {
+            console.error('Error syncing Spotify playback:', error);
         }
     }
 
@@ -240,13 +273,22 @@ class VoiceManager {
             console.log(`Found YouTube video: ${firstVideo.title?.text} (${firstVideo.id})`);
             
             // Spawn yt-dlp process to stream audio directly
-            const ytdlProcess = spawn(ytdlpPath, [
+            // Use ffmpeg-static if system ffmpeg is not available
+            const ytdlpArgs = [
                 '-f', 'bestaudio',
                 '-o', '-',
                 '--no-warnings',
                 '--no-playlist',
-                videoUrl
-            ]);
+            ];
+            
+            // Add ffmpeg location if using ffmpeg-static
+            if (ffmpegPath) {
+                ytdlpArgs.push('--ffmpeg-location', ffmpegPath);
+            }
+            
+            ytdlpArgs.push(videoUrl);
+            
+            const ytdlProcess = spawn(ytdlpPath, ytdlpArgs);
 
             ytdlProcess.stderr.on('data', (data) => {
                 console.log(`yt-dlp: ${data.toString()}`);
