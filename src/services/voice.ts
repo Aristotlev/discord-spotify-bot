@@ -42,6 +42,14 @@ function getYtdlpPath(): string {
 
 const ytdlpPath = getYtdlpPath();
 
+// List of Invidious instances to try
+const INVIDIOUS_INSTANCES = [
+    'https://inv.nadeko.net',
+    'https://invidious.nerdvpn.de',
+    'https://yt.artemislena.eu',
+    'https://invidious.privacyredirect.com',
+];
+
 // Search YouTube using yt-dlp and return the video URL
 async function searchYouTube(query: string): Promise<string | null> {
     return new Promise((resolve) => {
@@ -64,6 +72,39 @@ async function searchYouTube(query: string): Promise<string | null> {
             resolve(null);
         }
     });
+}
+
+// Get audio stream URL from Invidious (bypasses YouTube bot detection)
+async function getAudioFromInvidious(videoId: string): Promise<string | null> {
+    for (const instance of INVIDIOUS_INSTANCES) {
+        try {
+            const response = await fetch(`${instance}/api/v1/videos/${videoId}`);
+            if (!response.ok) continue;
+            
+            const data = await response.json() as any;
+            
+            // Find audio-only format
+            const audioFormats = data.adaptiveFormats?.filter((f: any) => 
+                f.type?.startsWith('audio/') && f.url
+            ) || [];
+            
+            if (audioFormats.length > 0) {
+                // Sort by bitrate and get highest quality audio
+                audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+                console.log(`Got audio from Invidious (${instance}): ${audioFormats[0].type}`);
+                return audioFormats[0].url;
+            }
+        } catch (error) {
+            console.log(`Invidious instance ${instance} failed, trying next...`);
+        }
+    }
+    return null;
+}
+
+// Extract video ID from YouTube URL
+function extractVideoId(url: string): string | null {
+    const match = url.match(/(?:v=|\/)([\w-]{11})(?:\?|&|$)/);
+    return match ? match[1] : null;
 }
 
 interface VoiceSession {
@@ -270,41 +311,77 @@ class VoiceManager {
                 return;
             }
 
-            console.log(`Found YouTube video: ${videoUrl}`);
+            const videoId = extractVideoId(videoUrl);
+            console.log(`Found YouTube video: ${videoUrl} (ID: ${videoId})`);
             
-            // Spawn yt-dlp process to stream audio directly
-            const ytdlpArgs = [
-                '-f', 'bestaudio',
-                '-o', '-',
-                '--no-warnings',
-                '--no-playlist',
-            ];
-            
-            // Add ffmpeg location if using ffmpeg-static
-            if (ffmpegPath) {
-                ytdlpArgs.push('--ffmpeg-location', ffmpegPath);
+            // Try to get audio URL from Invidious first (bypasses YouTube bot detection)
+            let audioUrl: string | null = null;
+            if (videoId) {
+                audioUrl = await getAudioFromInvidious(videoId);
             }
-            
-            ytdlpArgs.push(videoUrl);
-            
-            const ytdlProcess = spawn(ytdlpPath, ytdlpArgs);
 
-            ytdlProcess.stderr.on('data', (data) => {
-                console.log(`yt-dlp: ${data.toString()}`);
-            });
+            if (audioUrl) {
+                // Stream directly from Invidious audio URL using ffmpeg
+                console.log('Streaming from Invidious...');
+                const ffmpegProcess = spawn(ffmpegPath || 'ffmpeg', [
+                    '-i', audioUrl,
+                    '-f', 's16le',
+                    '-ar', '48000',
+                    '-ac', '2',
+                    'pipe:1'
+                ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-            ytdlProcess.on('error', (error) => {
-                console.error('yt-dlp process error:', error);
-            });
+                ffmpegProcess.stderr.on('data', (data) => {
+                    // Only log errors, not progress
+                    const msg = data.toString();
+                    if (msg.includes('Error') || msg.includes('error')) {
+                        console.log(`ffmpeg: ${msg}`);
+                    }
+                });
 
-            const resource = createAudioResource(ytdlProcess.stdout, {
-                inputType: StreamType.Arbitrary,
-            });
+                const resource = createAudioResource(ffmpegProcess.stdout, {
+                    inputType: StreamType.Raw,
+                });
 
-            session.player.play(resource);
-            session.currentTrackUrl = track.trackUrl;
+                session.player.play(resource);
+                session.currentTrackUrl = track.trackUrl;
+                console.log(`Now playing (via Invidious): ${track.trackName} by ${track.artistName}`);
+            } else {
+                // Fallback to yt-dlp (may fail with bot detection)
+                console.log('Invidious failed, trying yt-dlp directly...');
+                
+                const ytdlpArgs = [
+                    '-f', 'bestaudio',
+                    '-o', '-',
+                    '--no-warnings',
+                    '--no-playlist',
+                    '--extractor-args', 'youtube:player_client=android',
+                ];
+                
+                if (ffmpegPath) {
+                    ytdlpArgs.push('--ffmpeg-location', ffmpegPath);
+                }
+                
+                ytdlpArgs.push(videoUrl);
+                
+                const ytdlProcess = spawn(ytdlpPath, ytdlpArgs);
 
-            console.log(`Now playing: ${track.trackName} by ${track.artistName}`);
+                ytdlProcess.stderr.on('data', (data) => {
+                    console.log(`yt-dlp: ${data.toString()}`);
+                });
+
+                ytdlProcess.on('error', (error) => {
+                    console.error('yt-dlp process error:', error);
+                });
+
+                const resource = createAudioResource(ytdlProcess.stdout, {
+                    inputType: StreamType.Arbitrary,
+                });
+
+                session.player.play(resource);
+                session.currentTrackUrl = track.trackUrl;
+                console.log(`Now playing (via yt-dlp): ${track.trackName} by ${track.artistName}`);
+            }
         } catch (error) {
             console.error('Error playing track:', error);
         }
