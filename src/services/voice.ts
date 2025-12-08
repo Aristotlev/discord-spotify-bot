@@ -13,45 +13,24 @@ import { VoiceBasedChannel, GuildMember } from 'discord.js';
 import { spotifyService, CurrentlyPlaying } from './spotify';
 import play, { SoundCloudTrack, YouTubeStream, SoundCloudStream } from 'play-dl';
 
-// Initialize play-dl (no auth required for YouTube search)
-let playDlInitialized = false;
-
-async function initPlayDl(): Promise<void> {
-    if (playDlInitialized) return;
-    
-    try {
-        // Set YouTube as primary source
-        await play.setToken({
-            youtube: { cookie: '' } // Empty cookie works for basic searches
-        });
-        playDlInitialized = true;
-        console.log('play-dl initialized successfully');
-    } catch (error) {
-        console.log('play-dl init warning (continuing anyway):', error);
-        playDlInitialized = true;
-    }
-}
-
-// Search YouTube using play-dl (primary source - worked in dev)
+// Search YouTube using play-dl (primary source)
 async function searchYouTube(query: string): Promise<{ url: string; source: 'youtube' } | null> {
     try {
-        await initPlayDl();
-        
-        console.log(`Searching YouTube for: ${query}`);
+        console.log(`[YouTube] Searching for: ${query}`);
         const results = await play.search(query, { 
             source: { youtube: 'video' },
-            limit: 1 
+            limit: 5  // Get more results in case first one fails
         });
         
         if (results.length > 0) {
-            console.log(`YouTube found: ${results[0].title} - ${results[0].url}`);
+            console.log(`[YouTube] Found ${results.length} results. First: ${results[0].title} - ${results[0].url}`);
             return { url: results[0].url, source: 'youtube' };
         }
         
-        console.log(`No YouTube results for: ${query}`);
+        console.log(`[YouTube] No results for: ${query}`);
         return null;
-    } catch (error) {
-        console.error('YouTube search error:', error);
+    } catch (error: any) {
+        console.error(`[YouTube] Search error: ${error.message || error}`);
         return null;
     }
 }
@@ -59,41 +38,51 @@ async function searchYouTube(query: string): Promise<{ url: string; source: 'you
 // Search SoundCloud using play-dl (fallback source)
 async function searchSoundCloud(query: string): Promise<{ url: string; source: 'soundcloud' } | null> {
     try {
-        await initPlayDl();
-        
-        console.log(`Searching SoundCloud for: ${query}`);
+        console.log(`[SoundCloud] Searching for: ${query}`);
         const results = await play.search(query, { 
             source: { soundcloud: 'tracks' },
-            limit: 1 
+            limit: 5
         });
         
         if (results.length > 0) {
             const track = results[0] as SoundCloudTrack;
-            console.log(`SoundCloud found: ${track.name} - ${track.url}`);
+            console.log(`[SoundCloud] Found: ${track.name} - ${track.url}`);
             return { url: track.url, source: 'soundcloud' };
         }
         
-        console.log(`No SoundCloud results for: ${query}`);
+        console.log(`[SoundCloud] No results for: ${query}`);
         return null;
-    } catch (error) {
-        console.error('SoundCloud search error:', error);
+    } catch (error: any) {
+        console.error(`[SoundCloud] Search error: ${error.message || error}`);
         return null;
     }
 }
 
-// Search for audio - YouTube primary, SoundCloud fallback
-async function searchAudio(query: string): Promise<{ url: string; source: 'youtube' | 'soundcloud' } | null> {
-    // Try YouTube first (primary source - worked in dev)
-    const youtubeResult = await searchYouTube(query);
-    if (youtubeResult) {
-        return youtubeResult;
+// Search for audio with multiple query variations
+async function searchAudio(trackName: string, artistName: string): Promise<{ url: string; source: 'youtube' | 'soundcloud' } | null> {
+    // Try different search queries in order of specificity
+    const queries = [
+        `${trackName} ${artistName} official audio`,
+        `${trackName} ${artistName}`,
+        `${trackName} ${artistName} lyrics`,
+        `${trackName}`,
+    ];
+    
+    // Try YouTube with each query
+    for (const query of queries) {
+        const youtubeResult = await searchYouTube(query);
+        if (youtubeResult) {
+            return youtubeResult;
+        }
     }
     
     // Fallback to SoundCloud
-    console.log('YouTube failed, trying SoundCloud...');
-    const soundcloudResult = await searchSoundCloud(query);
-    if (soundcloudResult) {
-        return soundcloudResult;
+    console.log('[Audio] YouTube failed for all queries, trying SoundCloud...');
+    for (const query of queries.slice(0, 2)) { // Only try first 2 queries for SoundCloud
+        const soundcloudResult = await searchSoundCloud(query);
+        if (soundcloudResult) {
+            return soundcloudResult;
+        }
     }
     
     return null;
@@ -102,14 +91,12 @@ async function searchAudio(query: string): Promise<{ url: string; source: 'youtu
 // Get audio stream from URL using play-dl
 async function getAudioStream(url: string, source: 'youtube' | 'soundcloud'): Promise<YouTubeStream | SoundCloudStream | null> {
     try {
-        await initPlayDl();
-        
-        console.log(`Getting ${source} stream for: ${url}`);
+        console.log(`[Stream] Getting ${source} stream for: ${url}`);
         const stream = await play.stream(url);
-        console.log(`Stream created: type=${stream.type}`);
+        console.log(`[Stream] Created successfully: type=${stream.type}`);
         return stream;
-    } catch (error) {
-        console.error(`Error getting ${source} stream:`, error);
+    } catch (error: any) {
+        console.error(`[Stream] Error getting ${source} stream: ${error.message || error}`);
         return null;
     }
 }
@@ -307,24 +294,23 @@ class VoiceManager {
         if (!session || !track.trackUrl) return;
 
         try {
-            // Search for the track - YouTube primary, SoundCloud fallback
-            const searchQuery = `${track.trackName} ${track.artistName} audio`;
-            console.log(`Searching for audio: ${searchQuery}`);
+            console.log(`[PlayTrack] Starting playback for: ${track.trackName} by ${track.artistName}`);
             
-            const audioResult = await searchAudio(searchQuery);
+            // Search for the track - YouTube primary, SoundCloud fallback
+            const audioResult = await searchAudio(track.trackName, track.artistName);
             
             if (!audioResult) {
-                console.log(`No audio results found for: ${searchQuery}`);
+                console.log(`[PlayTrack] No audio results found for: ${track.trackName} by ${track.artistName}`);
                 return;
             }
 
-            console.log(`Found on ${audioResult.source}: ${audioResult.url}`);
+            console.log(`[PlayTrack] Found on ${audioResult.source}: ${audioResult.url}`);
             
             // Get audio stream using play-dl
             const stream = await getAudioStream(audioResult.url, audioResult.source);
             
             if (!stream) {
-                console.log(`Failed to get stream for: ${audioResult.url}`);
+                console.log(`[PlayTrack] Failed to get stream for: ${audioResult.url}`);
                 return;
             }
 
@@ -334,9 +320,9 @@ class VoiceManager {
 
             session.player.play(resource);
             session.currentTrackUrl = track.trackUrl;
-            console.log(`Now playing (via ${audioResult.source}): ${track.trackName} by ${track.artistName}`);
-        } catch (error) {
-            console.error('Error playing track:', error);
+            console.log(`[PlayTrack] Now playing (via ${audioResult.source}): ${track.trackName} by ${track.artistName}`);
+        } catch (error: any) {
+            console.error(`[PlayTrack] Error: ${error.message || error}`);
         }
     }
 
