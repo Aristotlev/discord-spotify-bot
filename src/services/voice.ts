@@ -10,9 +10,14 @@ import {
     StreamType,
 } from '@discordjs/voice';
 import { VoiceBasedChannel, GuildMember } from 'discord.js';
-import { Innertube } from 'youtubei.js';
 import { spawn, execSync } from 'child_process';
 import { spotifyService, CurrentlyPlaying } from './spotify';
+
+// Dynamic import for ESM-only youtubei.js module
+async function createInnertube() {
+    const { Innertube } = await import('youtubei.js');
+    return Innertube.create();
+}
 
 // Find yt-dlp binary - check common locations
 function getYtdlpPath(): string {
@@ -35,12 +40,12 @@ function getYtdlpPath(): string {
 
 const ytdlpPath = getYtdlpPath();
 
-// Initialize Innertube instance for search only
-let innertube: Innertube | null = null;
+// Cached Innertube instance for search
+let innertube: Awaited<ReturnType<typeof createInnertube>> | null = null;
 
-async function getInnertube(): Promise<Innertube> {
+async function getInnertube() {
     if (!innertube) {
-        innertube = await Innertube.create();
+        innertube = await createInnertube();
     }
     return innertube;
 }
