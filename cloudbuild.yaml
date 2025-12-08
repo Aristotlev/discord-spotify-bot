@@ -29,8 +29,10 @@ steps:
       - '1'
       - '--max-instances'
       - '1'
+      - '--timeout'
+      - '300'
       - '--set-env-vars'
-      - 'NODE_ENV=production'
+      - 'NODE_ENV=production,PORT=8080'
 
 images:
   - 'gcr.io/$PROJECT_ID/discord-spotify-bot:$COMMIT_SHA'
