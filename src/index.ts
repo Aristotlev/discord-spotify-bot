@@ -9,6 +9,15 @@ import { config, validateConfig } from './config';
 import { commands } from './commands';
 import { startServer } from './server';
 
+// Global error handlers to prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+});
+
 // Discord client - initialized lazily
 let client: Client | null = null;
 
@@ -39,12 +48,22 @@ function getClient(): Client {
                 
                 const errorMessage = '❌ An error occurred while executing this command.';
                 
-                if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp({ content: errorMessage, ephemeral: true });
-                } else {
-                    await interaction.reply({ content: errorMessage, ephemeral: true });
+                try {
+                    if (interaction.replied || interaction.deferred) {
+                        await interaction.followUp({ content: errorMessage, ephemeral: true }).catch(() => {});
+                    } else {
+                        await interaction.reply({ content: errorMessage, ephemeral: true }).catch(() => {});
+                    }
+                } catch (replyError) {
+                    // Interaction may have expired, just log it
+                    console.error('Could not send error response:', replyError);
                 }
             }
+        });
+
+        // Handle Discord client errors
+        client.on('error', (error) => {
+            console.error('Discord client error:', error);
         });
 
         // Bot ready event
