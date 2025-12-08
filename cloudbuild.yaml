@@ -32,7 +32,7 @@ steps:
       - '--timeout'
       - '300'
       - '--set-env-vars'
-      - 'NODE_ENV=production,PORT=8080'
+      - 'NODE_ENV=production'
 
 images:
   - 'gcr.io/$PROJECT_ID/discord-spotify-bot:$COMMIT_SHA'
