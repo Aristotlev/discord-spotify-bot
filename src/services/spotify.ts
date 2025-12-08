@@ -2,8 +2,15 @@ import SpotifyWebApi from 'spotify-web-api-node';
 import { config } from '../config';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Storage } from '@google-cloud/storage';
 
 const TOKENS_FILE = path.join(process.cwd(), 'spotify-tokens.json');
+const GCS_BUCKET = 'spoti-bot-tokens-480617';
+const GCS_FILE = 'spotify-tokens.json';
+
+// Use Cloud Storage in production, local file in development
+const useCloudStorage = process.env.NODE_ENV === 'production';
+const storage = useCloudStorage ? new Storage() : null;
 
 export interface SpotifyUserSession {
     accessToken: string;
@@ -26,29 +33,48 @@ export interface CurrentlyPlaying {
 class SpotifyService {
     private userSessions: Map<string, SpotifyUserSession> = new Map();
     private pendingAuths: Map<string, string> = new Map(); // state -> discordUserId
+    private initialized: boolean = false;
 
     constructor() {
-        this.loadTokensFromFile();
+        this.loadTokens();
     }
 
-    private loadTokensFromFile(): void {
+    private async loadTokens(): Promise<void> {
         try {
-            if (fs.existsSync(TOKENS_FILE)) {
-                const data = fs.readFileSync(TOKENS_FILE, 'utf-8');
-                const tokens: Record<string, SpotifyUserSession> = JSON.parse(data);
+            if (useCloudStorage && storage) {
+                // Load from Google Cloud Storage
+                const bucket = storage.bucket(GCS_BUCKET);
+                const file = bucket.file(GCS_FILE);
                 
-                for (const [userId, session] of Object.entries(tokens)) {
-                    this.userSessions.set(userId, session);
+                const [exists] = await file.exists();
+                if (exists) {
+                    const [contents] = await file.download();
+                    const tokens: Record<string, SpotifyUserSession> = JSON.parse(contents.toString());
+                    
+                    for (const [userId, session] of Object.entries(tokens)) {
+                        this.userSessions.set(userId, session);
+                    }
+                    console.log(`✅ Loaded ${this.userSessions.size} Spotify session(s) from Cloud Storage`);
                 }
-                
-                console.log(`✅ Loaded ${this.userSessions.size} Spotify session(s) from storage`);
+            } else {
+                // Load from local file
+                if (fs.existsSync(TOKENS_FILE)) {
+                    const data = fs.readFileSync(TOKENS_FILE, 'utf-8');
+                    const tokens: Record<string, SpotifyUserSession> = JSON.parse(data);
+                    
+                    for (const [userId, session] of Object.entries(tokens)) {
+                        this.userSessions.set(userId, session);
+                    }
+                    console.log(`✅ Loaded ${this.userSessions.size} Spotify session(s) from local storage`);
+                }
             }
         } catch (error) {
-            console.error('Error loading tokens from file:', error);
+            console.error('Error loading tokens:', error);
         }
+        this.initialized = true;
     }
 
-    private saveTokensToFile(): void {
+    private async saveTokens(): Promise<void> {
         try {
             const tokens: Record<string, SpotifyUserSession> = {};
             
@@ -56,9 +82,20 @@ class SpotifyService {
                 tokens[userId] = session;
             }
             
-            fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2));
+            const data = JSON.stringify(tokens, null, 2);
+
+            if (useCloudStorage && storage) {
+                // Save to Google Cloud Storage
+                const bucket = storage.bucket(GCS_BUCKET);
+                const file = bucket.file(GCS_FILE);
+                await file.save(data, { contentType: 'application/json' });
+                console.log('✅ Saved tokens to Cloud Storage');
+            } else {
+                // Save to local file
+                fs.writeFileSync(TOKENS_FILE, data);
+            }
         } catch (error) {
-            console.error('Error saving tokens to file:', error);
+            console.error('Error saving tokens:', error);
         }
     }
 
@@ -111,7 +148,7 @@ class SpotifyService {
             });
 
             // Save tokens to file for persistence
-            this.saveTokensToFile();
+            this.saveTokens();
 
             return discordUserId;
         } catch (error) {
@@ -141,14 +178,14 @@ class SpotifyService {
                 this.userSessions.set(discordUserId, session);
                 
                 // Save updated tokens to file
-                this.saveTokensToFile();
+                this.saveTokens();
                 
                 return true;
             } catch (error) {
                 console.error('Token refresh error:', error);
                 // If refresh fails, the token might be revoked - remove it
                 this.userSessions.delete(discordUserId);
-                this.saveTokensToFile();
+                this.saveTokens();
                 return false;
             }
         }
@@ -196,7 +233,7 @@ class SpotifyService {
 
     disconnectUser(discordUserId: string): void {
         this.userSessions.delete(discordUserId);
-        this.saveTokensToFile();
+        this.saveTokens();
     }
 
     getSession(discordUserId: string): SpotifyUserSession | undefined {
