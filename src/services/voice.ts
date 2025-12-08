@@ -42,12 +42,12 @@ function getYtdlpPath(): string {
 
 const ytdlpPath = getYtdlpPath();
 
-// List of Invidious instances to try
-const INVIDIOUS_INSTANCES = [
-    'https://inv.nadeko.net',
-    'https://invidious.nerdvpn.de',
-    'https://yt.artemislena.eu',
-    'https://invidious.privacyredirect.com',
+// List of Piped instances to try (more reliable than Invidious)
+const PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.adminforge.de',
+    'https://api.piped.yt',
+    'https://pipedapi.in.projectsegfau.lt',
 ];
 
 // Search YouTube using yt-dlp and return the video URL
@@ -74,28 +74,41 @@ async function searchYouTube(query: string): Promise<string | null> {
     });
 }
 
-// Get audio stream URL from Invidious (bypasses YouTube bot detection)
-async function getAudioFromInvidious(videoId: string): Promise<string | null> {
-    for (const instance of INVIDIOUS_INSTANCES) {
+// Get audio stream URL from Piped API (more reliable than Invidious)
+async function getAudioFromPiped(videoId: string): Promise<string | null> {
+    for (const instance of PIPED_INSTANCES) {
         try {
-            const response = await fetch(`${instance}/api/v1/videos/${videoId}`);
-            if (!response.ok) continue;
+            console.log(`Trying Piped instance: ${instance}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            
+            const response = await fetch(`${instance}/streams/${videoId}`, {
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                console.log(`Piped ${instance} returned ${response.status}`);
+                continue;
+            }
             
             const data = await response.json() as any;
             
-            // Find audio-only format
-            const audioFormats = data.adaptiveFormats?.filter((f: any) => 
-                f.type?.startsWith('audio/') && f.url
-            ) || [];
+            // Get audio streams
+            const audioStreams = data.audioStreams || [];
             
-            if (audioFormats.length > 0) {
+            if (audioStreams.length > 0) {
                 // Sort by bitrate and get highest quality audio
-                audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-                console.log(`Got audio from Invidious (${instance}): ${audioFormats[0].type}`);
-                return audioFormats[0].url;
+                audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+                const audioUrl = audioStreams[0].url;
+                console.log(`Got audio from Piped (${instance}): bitrate ${audioStreams[0].bitrate}`);
+                return audioUrl;
             }
-        } catch (error) {
-            console.log(`Invidious instance ${instance} failed, trying next...`);
+        } catch (error: any) {
+            console.log(`Piped instance ${instance} failed: ${error.message}`);
         }
     }
     return null;
@@ -314,15 +327,15 @@ class VoiceManager {
             const videoId = extractVideoId(videoUrl);
             console.log(`Found YouTube video: ${videoUrl} (ID: ${videoId})`);
             
-            // Try to get audio URL from Invidious first (bypasses YouTube bot detection)
+            // Try to get audio URL from Piped first (bypasses YouTube bot detection)
             let audioUrl: string | null = null;
             if (videoId) {
-                audioUrl = await getAudioFromInvidious(videoId);
+                audioUrl = await getAudioFromPiped(videoId);
             }
 
             if (audioUrl) {
-                // Stream directly from Invidious audio URL using ffmpeg
-                console.log('Streaming from Invidious...');
+                // Stream directly from Piped audio URL using ffmpeg
+                console.log('Streaming from Piped...');
                 const ffmpegProcess = spawn(ffmpegPath || 'ffmpeg', [
                     '-i', audioUrl,
                     '-f', 's16le',
