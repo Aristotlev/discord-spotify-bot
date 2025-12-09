@@ -36,13 +36,16 @@ function getYtdlpPath(): string {
 
 const ytdlpPath = getYtdlpPath();
 
+// Common yt-dlp args to bypass bot detection
+const YTDLP_BYPASS_ARGS = '--extractor-args "youtube:player_client=android,web" --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"';
+
 // Search YouTube using yt-dlp
 async function searchYouTube(query: string): Promise<string | null> {
     return new Promise((resolve) => {
         try {
             console.log('[YouTube] Searching for: ' + query);
-            const cmd = ytdlpPath + ' --no-warnings --flat-playlist --print url "ytsearch1:' + query + '"';
-            const result = execSync(cmd, { encoding: 'utf-8', timeout: 15000 }).trim();
+            const cmd = `${ytdlpPath} --no-warnings --flat-playlist --print url ${YTDLP_BYPASS_ARGS} "ytsearch1:${query}"`;
+            const result = execSync(cmd, { encoding: 'utf-8', timeout: 20000 }).trim();
             
             if (result && result.startsWith('http')) {
                 console.log('[YouTube] Found: ' + result);
@@ -63,22 +66,21 @@ async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
     return new Promise((resolve) => {
         try {
             console.log('[YouTube] Getting audio URL for: ' + videoUrl);
-            // Use format 251 (opus) or 140 (m4a) - these work reliably
-            // Try multiple format fallbacks in case one isn't available
-            const formats = ['251', '250', '249', '140', '139', 'bestaudio'];
+            // Try bestaudio first, then specific formats as fallback
+            const formats = ['bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio', '251', '140', '250', '249'];
             
             for (const fmt of formats) {
                 try {
-                    const cmd = ytdlpPath + ' -f ' + fmt + ' --get-url "' + videoUrl + '"';
+                    const cmd = `${ytdlpPath} -f "${fmt}" --get-url ${YTDLP_BYPASS_ARGS} "${videoUrl}"`;
                     const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
                     
                     if (result && result.startsWith('http')) {
-                        console.log('[YouTube] Got audio URL with format ' + fmt);
+                        console.log('[YouTube] Got audio URL with format: ' + fmt);
                         resolve(result);
                         return;
                     }
-                } catch {
-                    // Try next format
+                } catch (e: any) {
+                    console.log('[YouTube] Format ' + fmt + ' failed, trying next...');
                     continue;
                 }
             }
