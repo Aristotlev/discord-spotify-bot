@@ -1,4 +1,8 @@
 import express from 'express';
+import https from 'https';
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config';
 import { spotifyService } from '../services/spotify';
 
@@ -72,9 +76,27 @@ app.get('/', (req, res) => {
 });
 
 export function startServer(): void {
-    // Bind to 0.0.0.0 for Cloud Run (required for external access)
     const host = '0.0.0.0';
-    app.listen(config.server.port, host, () => {
-        console.log(`OAuth callback server running on http://${host}:${config.server.port}`);
-    });
+    
+    // Try to load SSL certificates for HTTPS
+    const certPath = path.join(process.cwd(), 'certs', 'cert.pem');
+    const keyPath = path.join(process.cwd(), 'certs', 'key.pem');
+    
+    if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+        // HTTPS server with SSL certificates
+        const httpsOptions = {
+            key: fs.readFileSync(keyPath),
+            cert: fs.readFileSync(certPath),
+        };
+        
+        https.createServer(httpsOptions, app).listen(config.server.port, host, () => {
+            console.log(`🔒 HTTPS OAuth callback server running on https://${host}:${config.server.port}`);
+        });
+    } else {
+        // Fallback to HTTP (for local development)
+        console.log('⚠️ SSL certificates not found, falling back to HTTP');
+        app.listen(config.server.port, host, () => {
+            console.log(`OAuth callback server running on http://${host}:${config.server.port}`);
+        });
+    }
 }
