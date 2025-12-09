@@ -85,10 +85,12 @@ export const disconnectCommand: Command = {
         .setDescription('Disconnect the bot from the voice channel'),
     
     async execute(interaction: ChatInputCommandInteraction) {
+        // Defer IMMEDIATELY to prevent interaction timeout
+        await interaction.deferReply({ flags: 64 }); // ephemeral
+        
         if (!interaction.guildId) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ This command can only be used in a server.',
-                flags: 64,
             });
             return;
         }
@@ -96,18 +98,16 @@ export const disconnectCommand: Command = {
         const session = voiceManager.getSession(interaction.guildId);
         
         if (!session) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ Bot is not connected to any voice channel.',
-                flags: 64,
             });
             return;
         }
 
         // Only the controlling user can disconnect
         if (session.controllingUserId !== interaction.user.id) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: `❌ Only <@${session.controllingUserId}> can disconnect the bot.`,
-                flags: 64,
             });
             return;
         }
@@ -119,7 +119,7 @@ export const disconnectCommand: Command = {
             .setDescription(result.message)
             .setColor(result.success ? 0x1DB954 : 0xFF0000);
 
-        await interaction.reply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
     },
 };
 
@@ -196,19 +196,20 @@ export const spotifyLogoutCommand: Command = {
         .setDescription('Disconnect your Spotify account from the bot'),
     
     async execute(interaction: ChatInputCommandInteraction) {
+        // Defer IMMEDIATELY to prevent interaction timeout
+        await interaction.deferReply({ flags: 64 }); // ephemeral
+        
         if (!spotifyService.isUserConnected(interaction.user.id)) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ Your Spotify account is not connected.',
-                flags: 64,
             });
             return;
         }
 
         spotifyService.disconnectUser(interaction.user.id);
 
-        await interaction.reply({
+        await interaction.editReply({
             content: '✅ Your Spotify account has been disconnected.',
-            flags: 64,
         });
     },
 };
