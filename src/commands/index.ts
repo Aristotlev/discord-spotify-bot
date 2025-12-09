@@ -20,6 +20,9 @@ export const spotifyLoginCommand: Command = {
         .setDescription('Connect your Spotify account to the bot'),
     
     async execute(interaction: ChatInputCommandInteraction) {
+        // Reply immediately to prevent timeout
+        await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
+        
         const authUrl = spotifyService.getAuthUrl(interaction.user.id);
         console.log('[SpotifyLogin] Generated auth URL:', authUrl);
         
@@ -31,7 +34,7 @@ export const spotifyLoginCommand: Command = {
             )
             .setColor(0x1DB954);
 
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        await interaction.editReply({ embeds: [embed] });
     },
 };
 
@@ -85,7 +88,7 @@ export const disconnectCommand: Command = {
         if (!interaction.guildId) {
             await interaction.reply({
                 content: '❌ This command can only be used in a server.',
-                ephemeral: true,
+                flags: 64,
             });
             return;
         }
@@ -95,7 +98,7 @@ export const disconnectCommand: Command = {
         if (!session) {
             await interaction.reply({
                 content: '❌ Bot is not connected to any voice channel.',
-                ephemeral: true,
+                flags: 64,
             });
             return;
         }
@@ -104,7 +107,7 @@ export const disconnectCommand: Command = {
         if (session.controllingUserId !== interaction.user.id) {
             await interaction.reply({
                 content: `❌ Only <@${session.controllingUserId}> can disconnect the bot.`,
-                ephemeral: true,
+                flags: 64,
             });
             return;
         }
@@ -196,7 +199,7 @@ export const spotifyLogoutCommand: Command = {
         if (!spotifyService.isUserConnected(interaction.user.id)) {
             await interaction.reply({
                 content: '❌ Your Spotify account is not connected.',
-                ephemeral: true,
+                flags: 64,
             });
             return;
         }
@@ -205,7 +208,7 @@ export const spotifyLogoutCommand: Command = {
 
         await interaction.reply({
             content: '✅ Your Spotify account has been disconnected.',
-            ephemeral: true,
+            flags: 64,
         });
     },
 };
