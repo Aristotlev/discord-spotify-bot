@@ -63,7 +63,8 @@ async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
     return new Promise((resolve) => {
         try {
             console.log('[YouTube] Getting audio URL for: ' + videoUrl);
-            const cmd = ytdlpPath + ' -f bestaudio --get-url "' + videoUrl + '"';
+            // Use extractor-args to bypass bot detection and specify audio format
+            const cmd = ytdlpPath + ' -f bestaudio --get-url --extractor-args "youtube:player_client=ios,web" "' + videoUrl + '"';
             const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 }).trim();
             
             if (result && result.startsWith('http')) {
