@@ -36,15 +36,16 @@ function getYtdlpPath(): string {
 
 const ytdlpPath = getYtdlpPath();
 
-// Common yt-dlp args to bypass bot detection
+// yt-dlp args to bypass bot detection (only for audio extraction, NOT search)
 const YTDLP_BYPASS_ARGS = '--extractor-args "youtube:player_client=android,web" --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"';
 
-// Search YouTube using yt-dlp
+// Search YouTube using yt-dlp (NO bypass args - they break search)
 async function searchYouTube(query: string): Promise<string | null> {
     return new Promise((resolve) => {
         try {
             console.log('[YouTube] Searching for: ' + query);
-            const cmd = `${ytdlpPath} --no-warnings --flat-playlist --print url ${YTDLP_BYPASS_ARGS} "ytsearch1:${query}"`;
+            // Don't use bypass args for search - they cause issues
+            const cmd = `${ytdlpPath} --no-warnings --flat-playlist --print url "ytsearch1:${query}"`;
             const result = execSync(cmd, { encoding: 'utf-8', timeout: 20000 }).trim();
             
             if (result && result.startsWith('http')) {
