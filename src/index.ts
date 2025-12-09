@@ -4,6 +4,8 @@ import {
     REST,
     Routes,
     Events,
+    DiscordAPIError,
+    MessageFlags,
 } from 'discord.js';
 import { config, validateConfig } from './config';
 import { commands } from './commands';
@@ -46,13 +48,19 @@ function getClient(): Client {
             } catch (error) {
                 console.error('Error executing command:', error);
                 
+                // Check if the error is an expired interaction (code 10062)
+                if (error instanceof DiscordAPIError && error.code === 10062) {
+                    console.log('Interaction expired - user may need to try again');
+                    return; // Don't try to respond to an expired interaction
+                }
+                
                 const errorMessage = '❌ An error occurred while executing this command.';
                 
                 try {
                     if (interaction.replied || interaction.deferred) {
-                        await interaction.followUp({ content: errorMessage, ephemeral: true }).catch(() => {});
+                        await interaction.followUp({ content: errorMessage, flags: MessageFlags.Ephemeral }).catch(() => {});
                     } else {
-                        await interaction.reply({ content: errorMessage, ephemeral: true }).catch(() => {});
+                        await interaction.reply({ content: errorMessage, flags: MessageFlags.Ephemeral }).catch(() => {});
                     }
                 } catch (replyError) {
                     // Interaction may have expired, just log it

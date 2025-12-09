@@ -13,8 +13,13 @@ import { VoiceBasedChannel, GuildMember } from 'discord.js';
 import { spawn, execSync, ChildProcess } from 'child_process';
 import { spotifyService, CurrentlyPlaying } from './spotify';
 
-// Find yt-dlp binary path
+// Lazy-loaded yt-dlp binary path
+let ytdlpPath: string | null = null;
+
+// Find yt-dlp binary path - called lazily when first needed
 function getYtdlpPath(): string {
+    if (ytdlpPath) return ytdlpPath;
+    
     const paths = [
         '/usr/local/bin/yt-dlp',
         '/opt/homebrew/bin/yt-dlp',
@@ -24,17 +29,17 @@ function getYtdlpPath(): string {
     
     for (const p of paths) {
         try {
-            execSync(p + ' --version', { stdio: 'ignore' });
+            execSync(p + ' --version', { stdio: 'ignore', timeout: 5000 });
             console.log('[yt-dlp] Found at: ' + p);
+            ytdlpPath = p;
             return p;
         } catch {}
     }
     
     console.log('[yt-dlp] Not found in common paths, using PATH');
+    ytdlpPath = 'yt-dlp';
     return 'yt-dlp';
 }
-
-const ytdlpPath = getYtdlpPath();
 
 // Enhanced yt-dlp args to bypass bot detection - updated for latest YouTube changes
 const YTDLP_COMMON_ARGS = [
@@ -61,7 +66,7 @@ async function searchYouTube(query: string): Promise<string | null> {
         
         console.log('[YouTube] Running: yt-dlp ' + args.join(' '));
         
-        const proc = spawn(ytdlpPath, args, { 
+        const proc = spawn(getYtdlpPath(), args, { 
             timeout: 30000,
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -141,7 +146,7 @@ async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
                 videoUrl
             ];
             
-            const proc = spawn(ytdlpPath, args, {
+            const proc = spawn(getYtdlpPath(), args, {
                 timeout: 30000,
                 stdio: ['ignore', 'pipe', 'pipe']
             });
@@ -234,7 +239,7 @@ function createYtdlpStream(videoUrl: string): ChildProcess {
     console.log('[yt-dlp+FFmpeg] Creating piped stream for: ' + videoUrl);
     
     // Use yt-dlp to download audio and pipe directly to ffmpeg
-    const ytdlpProcess = spawn(ytdlpPath, [
+    const ytdlpProcess = spawn(getYtdlpPath(), [
         ...YTDLP_COMMON_ARGS,
         '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         '-o', '-',  // Output to stdout

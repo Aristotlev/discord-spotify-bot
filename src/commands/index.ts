@@ -4,6 +4,7 @@ import {
     EmbedBuilder,
     GuildMember,
     ChannelType,
+    MessageFlags,
 } from 'discord.js';
 import { spotifyService } from '../services/spotify';
 import { voiceManager } from '../services/voice';
@@ -13,6 +14,31 @@ export interface Command {
     execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
 }
 
+// Helper to safely defer a reply - handles timeout errors gracefully
+async function safeDefer(interaction: ChatInputCommandInteraction, ephemeral = false): Promise<boolean> {
+    try {
+        if (ephemeral) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        } else {
+            await interaction.deferReply();
+        }
+        return true;
+    } catch (error: any) {
+        // If interaction already expired or was already replied to, log and return false
+        console.error(`[Command] Failed to defer reply for ${interaction.commandName}:`, error.message);
+        return false;
+    }
+}
+
+// Helper to safely edit reply - handles errors gracefully
+async function safeEditReply(interaction: ChatInputCommandInteraction, content: any): Promise<void> {
+    try {
+        await interaction.editReply(content);
+    } catch (error: any) {
+        console.error(`[Command] Failed to edit reply for ${interaction.commandName}:`, error.message);
+    }
+}
+
 // /spotify-login command
 export const spotifyLoginCommand: Command = {
     data: new SlashCommandBuilder()
@@ -20,8 +46,8 @@ export const spotifyLoginCommand: Command = {
         .setDescription('Connect your Spotify account to the bot'),
     
     async execute(interaction: ChatInputCommandInteraction) {
-        // Reply immediately to prevent timeout
-        await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
+        // Defer immediately - if this fails, the interaction expired
+        if (!await safeDefer(interaction, true)) return;
         
         const authUrl = spotifyService.getAuthUrl(interaction.user.id);
         console.log('[SpotifyLogin] Generated auth URL:', authUrl);
@@ -34,7 +60,7 @@ export const spotifyLoginCommand: Command = {
             )
             .setColor(0x1DB954);
 
-        await interaction.editReply({ embeds: [embed] });
+        await safeEditReply(interaction, { embeds: [embed] });
     },
 };
 
@@ -45,20 +71,20 @@ export const connectCommand: Command = {
         .setDescription('Connect the bot to your current voice channel'),
     
     async execute(interaction: ChatInputCommandInteraction) {
-        // Defer IMMEDIATELY to prevent interaction timeout
-        await interaction.deferReply();
+        // Defer immediately - if this fails, the interaction expired
+        if (!await safeDefer(interaction)) return;
         
         const member = interaction.member as GuildMember;
         
         if (!member.voice.channel) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ You need to be in a voice channel first!',
             });
             return;
         }
 
         if (member.voice.channel.type !== ChannelType.GuildVoice) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ Please join a regular voice channel.',
             });
             return;
@@ -74,7 +100,7 @@ export const connectCommand: Command = {
             .setDescription(result.message)
             .setColor(result.success ? 0x1DB954 : 0xFF0000);
 
-        await interaction.editReply({ embeds: [embed] });
+        await safeEditReply(interaction, { embeds: [embed] });
     },
 };
 
@@ -85,11 +111,11 @@ export const disconnectCommand: Command = {
         .setDescription('Disconnect the bot from the voice channel'),
     
     async execute(interaction: ChatInputCommandInteraction) {
-        // Defer IMMEDIATELY to prevent interaction timeout
-        await interaction.deferReply({ flags: 64 }); // ephemeral
+        // Defer immediately - if this fails, the interaction expired
+        if (!await safeDefer(interaction, true)) return;
         
         if (!interaction.guildId) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ This command can only be used in a server.',
             });
             return;
@@ -98,7 +124,7 @@ export const disconnectCommand: Command = {
         const session = voiceManager.getSession(interaction.guildId);
         
         if (!session) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ Bot is not connected to any voice channel.',
             });
             return;
@@ -106,7 +132,7 @@ export const disconnectCommand: Command = {
 
         // Only the controlling user can disconnect
         if (session.controllingUserId !== interaction.user.id) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: `❌ Only <@${session.controllingUserId}> can disconnect the bot.`,
             });
             return;
@@ -119,7 +145,7 @@ export const disconnectCommand: Command = {
             .setDescription(result.message)
             .setColor(result.success ? 0x1DB954 : 0xFF0000);
 
-        await interaction.editReply({ embeds: [embed] });
+        await safeEditReply(interaction, { embeds: [embed] });
     },
 };
 
@@ -130,11 +156,11 @@ export const nowPlayingCommand: Command = {
         .setDescription('Show what is currently playing'),
     
     async execute(interaction: ChatInputCommandInteraction) {
-        // Defer IMMEDIATELY to prevent interaction timeout
-        await interaction.deferReply();
+        // Defer immediately - if this fails, the interaction expired
+        if (!await safeDefer(interaction)) return;
         
         if (!interaction.guildId) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ This command can only be used in a server.',
             });
             return;
@@ -143,7 +169,7 @@ export const nowPlayingCommand: Command = {
         const session = voiceManager.getSession(interaction.guildId);
         
         if (!session) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ Bot is not connected to any voice channel.',
             });
             return;
@@ -154,7 +180,7 @@ export const nowPlayingCommand: Command = {
         );
 
         if (!currentlyPlaying) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '🔇 Nothing is currently playing on Spotify.',
             });
             return;
@@ -185,7 +211,7 @@ export const nowPlayingCommand: Command = {
             embed.setURL(currentlyPlaying.trackUrl);
         }
 
-        await interaction.editReply({ embeds: [embed] });
+        await safeEditReply(interaction, { embeds: [embed] });
     },
 };
 
@@ -196,11 +222,11 @@ export const spotifyLogoutCommand: Command = {
         .setDescription('Disconnect your Spotify account from the bot'),
     
     async execute(interaction: ChatInputCommandInteraction) {
-        // Defer IMMEDIATELY to prevent interaction timeout
-        await interaction.deferReply({ flags: 64 }); // ephemeral
+        // Defer immediately - if this fails, the interaction expired
+        if (!await safeDefer(interaction, true)) return;
         
         if (!spotifyService.isUserConnected(interaction.user.id)) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ Your Spotify account is not connected.',
             });
             return;
@@ -208,7 +234,7 @@ export const spotifyLogoutCommand: Command = {
 
         spotifyService.disconnectUser(interaction.user.id);
 
-        await interaction.editReply({
+        await safeEditReply(interaction, {
             content: '✅ Your Spotify account has been disconnected.',
         });
     },
@@ -221,20 +247,20 @@ export const syncCommand: Command = {
         .setDescription('Sync Spotify playback to your voice channel'),
     
     async execute(interaction: ChatInputCommandInteraction) {
-        // Defer IMMEDIATELY to prevent interaction timeout
-        await interaction.deferReply();
+        // Defer immediately - if this fails, the interaction expired
+        if (!await safeDefer(interaction)) return;
         
         const member = interaction.member as GuildMember;
         
         if (!member.voice.channel) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ You need to be in a voice channel first!',
             });
             return;
         }
 
         if (member.voice.channel.type !== ChannelType.GuildVoice) {
-            await interaction.editReply({
+            await safeEditReply(interaction, {
                 content: '❌ Please join a regular voice channel.',
             });
             return;
@@ -250,7 +276,7 @@ export const syncCommand: Command = {
             .setDescription(result.message)
             .setColor(result.success ? 0x1DB954 : 0xFF0000);
 
-        await interaction.editReply({ embeds: [embed] });
+        await safeEditReply(interaction, { embeds: [embed] });
     },
 };
 
