@@ -21,6 +21,7 @@ export const spotifyLoginCommand: Command = {
     
     async execute(interaction: ChatInputCommandInteraction) {
         const authUrl = spotifyService.getAuthUrl(interaction.user.id);
+        console.log('[SpotifyLogin] Generated auth URL:', authUrl);
         
         const embed = new EmbedBuilder()
             .setTitle('🎵 Connect Spotify')
@@ -41,25 +42,24 @@ export const connectCommand: Command = {
         .setDescription('Connect the bot to your current voice channel'),
     
     async execute(interaction: ChatInputCommandInteraction) {
+        // Defer IMMEDIATELY to prevent interaction timeout
+        await interaction.deferReply();
+        
         const member = interaction.member as GuildMember;
         
         if (!member.voice.channel) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ You need to be in a voice channel first!',
-                ephemeral: true,
             });
             return;
         }
 
         if (member.voice.channel.type !== ChannelType.GuildVoice) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ Please join a regular voice channel.',
-                ephemeral: true,
             });
             return;
         }
-
-        await interaction.deferReply();
 
         const result = await voiceManager.connectToChannel(
             member.voice.channel,
@@ -127,10 +127,12 @@ export const nowPlayingCommand: Command = {
         .setDescription('Show what is currently playing'),
     
     async execute(interaction: ChatInputCommandInteraction) {
+        // Defer IMMEDIATELY to prevent interaction timeout
+        await interaction.deferReply();
+        
         if (!interaction.guildId) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ This command can only be used in a server.',
-                ephemeral: true,
             });
             return;
         }
@@ -138,14 +140,11 @@ export const nowPlayingCommand: Command = {
         const session = voiceManager.getSession(interaction.guildId);
         
         if (!session) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ Bot is not connected to any voice channel.',
-                ephemeral: true,
             });
             return;
         }
-
-        await interaction.deferReply();
 
         const currentlyPlaying = await spotifyService.getCurrentlyPlaying(
             session.controllingUserId
@@ -218,25 +217,24 @@ export const syncCommand: Command = {
         .setDescription('Sync Spotify playback to your voice channel'),
     
     async execute(interaction: ChatInputCommandInteraction) {
+        // Defer IMMEDIATELY to prevent interaction timeout
+        await interaction.deferReply();
+        
         const member = interaction.member as GuildMember;
         
         if (!member.voice.channel) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ You need to be in a voice channel first!',
-                ephemeral: true,
             });
             return;
         }
 
         if (member.voice.channel.type !== ChannelType.GuildVoice) {
-            await interaction.reply({
+            await interaction.editReply({
                 content: '❌ Please join a regular voice channel.',
-                ephemeral: true,
             });
             return;
         }
-
-        await interaction.deferReply();
 
         const result = await voiceManager.connectToChannel(
             member.voice.channel,

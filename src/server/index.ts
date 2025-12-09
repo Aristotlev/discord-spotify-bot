@@ -4,7 +4,15 @@ import { spotifyService } from '../services/spotify';
 
 const app = express();
 
+// Log all incoming requests
+app.use((req, res, next) => {
+    console.log(`[Server] ${req.method} ${req.url}`);
+    next();
+});
+
 app.get('/callback', async (req, res) => {
+    console.log('[Callback] Received callback request');
+    console.log('[Callback] Query params:', req.query);
     const { code, state, error } = req.query;
 
     if (error) {
@@ -29,6 +37,8 @@ app.get('/callback', async (req, res) => {
         code as string,
         state as string
     );
+
+    console.log('[Callback] handleCallback result:', discordUserId);
 
     if (discordUserId) {
         res.send(`

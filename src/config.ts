@@ -1,6 +1,23 @@
 import dotenv from 'dotenv';
+import path from 'path';
 
-dotenv.config();
+// Load environment-specific .env file
+// Priority: .env.development (if NODE_ENV not set or is development) > .env
+const envFile = process.env.NODE_ENV === 'production' 
+    ? '.env' 
+    : '.env.development';
+
+// Try to load the environment-specific file first
+const envPath = path.resolve(process.cwd(), envFile);
+const result = dotenv.config({ path: envPath });
+
+// Fall back to default .env if environment-specific file doesn't exist
+if (result.error) {
+    dotenv.config();
+}
+
+console.log(`📁 Loaded config from: ${result.error ? '.env' : envFile}`);
+console.log(`🌐 Redirect URI: ${process.env.SPOTIFY_REDIRECT_URI}`);
 
 export const config = {
     discord: {

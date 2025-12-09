@@ -63,17 +63,28 @@ async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
     return new Promise((resolve) => {
         try {
             console.log('[YouTube] Getting audio URL for: ' + videoUrl);
-            // Use extractor-args to bypass bot detection and specify audio format
-            const cmd = ytdlpPath + ' -f bestaudio --get-url --extractor-args "youtube:player_client=ios,web" "' + videoUrl + '"';
-            const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 }).trim();
+            // Use format 251 (opus) or 140 (m4a) - these work reliably
+            // Try multiple format fallbacks in case one isn't available
+            const formats = ['251', '250', '249', '140', '139', 'bestaudio'];
             
-            if (result && result.startsWith('http')) {
-                console.log('[YouTube] Got audio URL');
-                resolve(result);
-            } else {
-                console.log('[YouTube] Failed to get audio URL');
-                resolve(null);
+            for (const fmt of formats) {
+                try {
+                    const cmd = ytdlpPath + ' -f ' + fmt + ' --get-url "' + videoUrl + '"';
+                    const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+                    
+                    if (result && result.startsWith('http')) {
+                        console.log('[YouTube] Got audio URL with format ' + fmt);
+                        resolve(result);
+                        return;
+                    }
+                } catch {
+                    // Try next format
+                    continue;
+                }
             }
+            
+            console.log('[YouTube] Failed to get audio URL with any format');
+            resolve(null);
         } catch (error: any) {
             console.error('[YouTube] Audio URL error: ' + (error.message || error));
             resolve(null);
@@ -87,15 +98,16 @@ function createFfmpegStream(audioUrl: string): ChildProcess {
     
     const ffmpegProcess = spawn('ffmpeg', [
         '-reconnect', '1',
-        '-reconnect_streamed', '1',
+        '-reconnect_streamed', '1', 
         '-reconnect_delay_max', '5',
+        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         '-i', audioUrl,
         '-analyzeduration', '0',
-        '-loglevel', '0',
+        '-loglevel', 'warning',
         '-f', 's16le',
         '-ar', '48000',
         '-ac', '2',
-        'pipe:1'
+        '-'
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     ffmpegProcess.stderr?.on('data', (data: Buffer) => {
@@ -107,6 +119,12 @@ function createFfmpegStream(audioUrl: string): ChildProcess {
 
     ffmpegProcess.on('error', (error) => {
         console.error('[FFmpeg] Process error: ' + error.message);
+    });
+
+    ffmpegProcess.on('close', (code) => {
+        if (code !== 0 && code !== null) {
+            console.log('[FFmpeg] Process exited with code: ' + code);
+        }
     });
 
     return ffmpegProcess;
@@ -318,15 +336,18 @@ class VoiceManager {
             
             // Kill previous ffmpeg process if any
             if (session.currentProcess) {
-                session.currentProcess.kill();
+                session.currentProcess.kill('SIGKILL');
                 session.currentProcess = null;
             }
             
+            // Stop current player
+            session.player.stop(true);
+            
             // Search queries in order of preference
             const queries = [
-                track.trackName + ' ' + track.artistName + ' official audio',
+                track.trackName + ' ' + track.artistName + ' audio',
+                track.trackName + ' ' + track.artistName + ' official',
                 track.trackName + ' ' + track.artistName,
-                track.trackName + ' audio',
             ];
             
             // Find YouTube video
@@ -348,20 +369,37 @@ class VoiceManager {
                 return;
             }
             
+            console.log('[PlayTrack] Got audio URL, creating ffmpeg stream...');
+            
             // Create ffmpeg stream
             const ffmpegProcess = createFfmpegStream(audioUrl);
             session.currentProcess = ffmpegProcess;
             
-            const resource = createAudioResource(ffmpegProcess.stdout!, {
+            // Handle ffmpeg stdout errors
+            if (!ffmpegProcess.stdout) {
+                console.error('[PlayTrack] FFmpeg stdout is null');
+                return;
+            }
+            
+            // Create audio resource
+            const resource = createAudioResource(ffmpegProcess.stdout, {
                 inputType: StreamType.Raw,
+                inlineVolume: true,
             });
+            
+            // Set volume to 100%
+            if (resource.volume) {
+                resource.volume.setVolume(1);
+            }
 
+            console.log('[PlayTrack] Playing audio resource...');
             session.player.play(resource);
             session.currentTrackUrl = track.trackUrl;
             console.log('[PlayTrack] Now playing: ' + track.trackName);
             
         } catch (error: any) {
             console.error('[PlayTrack] Error: ' + (error.message || error));
+            console.error('[PlayTrack] Stack:', error.stack);
         }
     }
 

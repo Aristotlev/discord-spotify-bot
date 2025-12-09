@@ -161,8 +161,12 @@ class SpotifyService {
         const session = this.userSessions.get(discordUserId);
         if (!session) return false;
 
-        // Refresh if token expires in less than 5 minutes
-        if (Date.now() > session.expiresAt - 5 * 60 * 1000) {
+        // Refresh if token expires in less than 5 minutes OR if already expired
+        const now = Date.now();
+        const expiresIn = session.expiresAt - now;
+        
+        if (expiresIn < 5 * 60 * 1000) {
+            console.log(`[Spotify] Token expiring/expired (${Math.round(expiresIn / 1000)}s left), refreshing...`);
             const spotifyApi = this.createSpotifyApi();
             spotifyApi.setRefreshToken(session.refreshToken);
 
@@ -178,14 +182,15 @@ class SpotifyService {
                 this.userSessions.set(discordUserId, session);
                 
                 // Save updated tokens to file
-                this.saveTokens();
+                await this.saveTokens();
                 
+                console.log('[Spotify] Token refreshed successfully');
                 return true;
             } catch (error) {
-                console.error('Token refresh error:', error);
+                console.error('[Spotify] Token refresh error:', error);
                 // If refresh fails, the token might be revoked - remove it
                 this.userSessions.delete(discordUserId);
-                this.saveTokens();
+                await this.saveTokens();
                 return false;
             }
         }
@@ -197,10 +202,19 @@ class SpotifyService {
         const session = this.userSessions.get(discordUserId);
         if (!session) return null;
 
-        await this.refreshTokenIfNeeded(discordUserId);
+        // Refresh token if needed
+        const refreshed = await this.refreshTokenIfNeeded(discordUserId);
+        if (!refreshed) {
+            console.error('Failed to refresh token for user:', discordUserId);
+            return null;
+        }
+        
+        // Get the updated session after potential refresh
+        const updatedSession = this.userSessions.get(discordUserId);
+        if (!updatedSession) return null;
 
         const spotifyApi = this.createSpotifyApi();
-        spotifyApi.setAccessToken(session.accessToken);
+        spotifyApi.setAccessToken(updatedSession.accessToken);
 
         try {
             const response = await spotifyApi.getMyCurrentPlayingTrack();

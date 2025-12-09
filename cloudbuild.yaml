@@ -32,7 +32,7 @@ steps:
       - '--timeout'
       - '300'
       - '--update-env-vars'
-      - 'NODE_ENV=production'
+      - 'NODE_ENV=production,SPOTIFY_REDIRECT_URI=https://discord-spotify-bot-785083763706.us-central1.run.app/callback'
 
 images:
   - 'gcr.io/$PROJECT_ID/discord-spotify-bot:$COMMIT_SHA'
