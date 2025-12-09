@@ -36,62 +36,160 @@ function getYtdlpPath(): string {
 
 const ytdlpPath = getYtdlpPath();
 
-// yt-dlp args to bypass bot detection (only for audio extraction, NOT search)
-const YTDLP_BYPASS_ARGS = '--extractor-args "youtube:player_client=android,web" --user-agent "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"';
+// Enhanced yt-dlp args to bypass bot detection - updated for latest YouTube changes
+const YTDLP_COMMON_ARGS = [
+    '--no-warnings',
+    '--no-check-certificates',
+    '--geo-bypass',
+    '--extractor-args', 'youtube:player_client=ios,web',
+    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+];
 
-// Search YouTube using yt-dlp (NO bypass args - they break search)
+// Search YouTube using yt-dlp with improved error handling
 async function searchYouTube(query: string): Promise<string | null> {
     return new Promise((resolve) => {
-        try {
-            console.log('[YouTube] Searching for: ' + query);
-            // Don't use bypass args for search - they cause issues
-            const cmd = `${ytdlpPath} --no-warnings --flat-playlist --print url "ytsearch1:${query}"`;
-            const result = execSync(cmd, { encoding: 'utf-8', timeout: 20000 }).trim();
+        const escapedQuery = query.replace(/"/g, '\\"');
+        console.log('[YouTube] Searching for: ' + query);
+        
+        // Use spawn instead of execSync for better error handling
+        const args = [
+            ...YTDLP_COMMON_ARGS,
+            '--flat-playlist',
+            '--print', 'url',
+            `ytsearch1:${escapedQuery}`
+        ];
+        
+        console.log('[YouTube] Running: yt-dlp ' + args.join(' '));
+        
+        const proc = spawn(ytdlpPath, args, { 
+            timeout: 30000,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        
+        let stdout = '';
+        let stderr = '';
+        
+        proc.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+        
+        proc.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+        
+        proc.on('error', (error) => {
+            console.error('[YouTube] Process error: ' + error.message);
+            resolve(null);
+        });
+        
+        proc.on('close', (code) => {
+            if (stderr) {
+                console.log('[YouTube] stderr: ' + stderr.substring(0, 500));
+            }
             
-            if (result && result.startsWith('http')) {
+            const result = stdout.trim();
+            if (code === 0 && result && result.startsWith('http')) {
                 console.log('[YouTube] Found: ' + result);
                 resolve(result);
             } else {
-                console.log('[YouTube] No results');
+                console.log('[YouTube] Search failed with code ' + code + ', output: ' + result.substring(0, 200));
                 resolve(null);
             }
-        } catch (error: any) {
-            console.error('[YouTube] Search error: ' + (error.message || error));
-            resolve(null);
-        }
+        });
+        
+        // Timeout handler
+        setTimeout(() => {
+            if (!proc.killed) {
+                console.log('[YouTube] Search timeout, killing process');
+                proc.kill('SIGKILL');
+                resolve(null);
+            }
+        }, 25000);
     });
 }
 
-// Get direct audio URL from YouTube using yt-dlp
+// Get direct audio URL from YouTube using yt-dlp with improved bypass
 async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
     return new Promise((resolve) => {
-        try {
-            console.log('[YouTube] Getting audio URL for: ' + videoUrl);
-            // Try bestaudio first, then specific formats as fallback
-            const formats = ['bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio', '251', '140', '250', '249'];
-            
-            for (const fmt of formats) {
-                try {
-                    const cmd = `${ytdlpPath} -f "${fmt}" --get-url ${YTDLP_BYPASS_ARGS} "${videoUrl}"`;
-                    const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-                    
-                    if (result && result.startsWith('http')) {
-                        console.log('[YouTube] Got audio URL with format: ' + fmt);
-                        resolve(result);
-                        return;
-                    }
-                } catch (e: any) {
-                    console.log('[YouTube] Format ' + fmt + ' failed, trying next...');
-                    continue;
-                }
+        console.log('[YouTube] Getting audio URL for: ' + videoUrl);
+        
+        // Try multiple format combinations
+        const formatPriority = [
+            'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            '140',  // m4a audio
+            '251',  // webm opus
+            '250',  // webm opus lower quality
+            '249',  // webm opus lowest
+        ];
+        
+        let currentIndex = 0;
+        
+        const tryFormat = () => {
+            if (currentIndex >= formatPriority.length) {
+                console.log('[YouTube] Failed to get audio URL with any format');
+                resolve(null);
+                return;
             }
             
-            console.log('[YouTube] Failed to get audio URL with any format');
-            resolve(null);
-        } catch (error: any) {
-            console.error('[YouTube] Audio URL error: ' + (error.message || error));
-            resolve(null);
-        }
+            const fmt = formatPriority[currentIndex];
+            console.log('[YouTube] Trying format: ' + fmt);
+            
+            const args = [
+                ...YTDLP_COMMON_ARGS,
+                '-f', fmt,
+                '--get-url',
+                videoUrl
+            ];
+            
+            const proc = spawn(ytdlpPath, args, {
+                timeout: 30000,
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+            
+            let stdout = '';
+            let stderr = '';
+            
+            proc.stdout.on('data', (data) => {
+                stdout += data.toString();
+            });
+            
+            proc.stderr.on('data', (data) => {
+                stderr += data.toString();
+            });
+            
+            proc.on('error', (error) => {
+                console.error('[YouTube] Format ' + fmt + ' process error: ' + error.message);
+                currentIndex++;
+                tryFormat();
+            });
+            
+            proc.on('close', (code) => {
+                const result = stdout.trim();
+                if (code === 0 && result && result.startsWith('http')) {
+                    console.log('[YouTube] Got audio URL with format: ' + fmt);
+                    resolve(result);
+                } else {
+                    if (stderr) {
+                        console.log('[YouTube] Format ' + fmt + ' stderr: ' + stderr.substring(0, 200));
+                    }
+                    console.log('[YouTube] Format ' + fmt + ' failed, trying next...');
+                    currentIndex++;
+                    tryFormat();
+                }
+            });
+            
+            // Timeout for this format attempt
+            setTimeout(() => {
+                if (!proc.killed) {
+                    console.log('[YouTube] Format ' + fmt + ' timeout');
+                    proc.kill('SIGKILL');
+                    currentIndex++;
+                    tryFormat();
+                }
+            }, 20000);
+        };
+        
+        tryFormat();
     });
 }
 
@@ -335,10 +433,13 @@ class VoiceManager {
         if (!session || !track.trackUrl) return;
 
         try {
+            console.log('[PlayTrack] ====================================');
             console.log('[PlayTrack] Starting: ' + track.trackName + ' by ' + track.artistName);
+            console.log('[PlayTrack] Spotify URL: ' + track.trackUrl);
             
             // Kill previous ffmpeg process if any
             if (session.currentProcess) {
+                console.log('[PlayTrack] Killing previous process');
                 session.currentProcess.kill('SIGKILL');
                 session.currentProcess = null;
             }
@@ -349,30 +450,39 @@ class VoiceManager {
             // Search queries in order of preference
             const queries = [
                 track.trackName + ' ' + track.artistName + ' audio',
-                track.trackName + ' ' + track.artistName + ' official',
+                track.trackName + ' ' + track.artistName + ' official audio',
                 track.trackName + ' ' + track.artistName,
+                track.trackName + ' ' + track.artistName + ' lyrics',
             ];
             
             // Find YouTube video
             let videoUrl: string | null = null;
             for (const query of queries) {
+                console.log('[PlayTrack] Trying search query: ' + query);
                 videoUrl = await searchYouTube(query);
-                if (videoUrl) break;
+                if (videoUrl) {
+                    console.log('[PlayTrack] Found video: ' + videoUrl);
+                    break;
+                }
             }
             
             if (!videoUrl) {
-                console.log('[PlayTrack] No YouTube results for: ' + track.trackName);
+                console.error('[PlayTrack] ❌ No YouTube results for: ' + track.trackName);
+                console.log('[PlayTrack] ====================================');
                 return;
             }
             
             // Get direct audio URL
+            console.log('[PlayTrack] Getting audio stream URL...');
             const audioUrl = await getYouTubeAudioUrl(videoUrl);
             if (!audioUrl) {
-                console.log('[PlayTrack] Failed to get audio URL');
+                console.error('[PlayTrack] ❌ Failed to get audio URL from: ' + videoUrl);
+                console.log('[PlayTrack] ====================================');
                 return;
             }
             
-            console.log('[PlayTrack] Got audio URL, creating ffmpeg stream...');
+            console.log('[PlayTrack] Got audio URL, length: ' + audioUrl.length);
+            console.log('[PlayTrack] Creating ffmpeg stream...');
             
             // Create ffmpeg stream
             const ffmpegProcess = createFfmpegStream(audioUrl);
@@ -380,11 +490,13 @@ class VoiceManager {
             
             // Handle ffmpeg stdout errors
             if (!ffmpegProcess.stdout) {
-                console.error('[PlayTrack] FFmpeg stdout is null');
+                console.error('[PlayTrack] ❌ FFmpeg stdout is null');
+                console.log('[PlayTrack] ====================================');
                 return;
             }
             
             // Create audio resource
+            console.log('[PlayTrack] Creating audio resource...');
             const resource = createAudioResource(ffmpegProcess.stdout, {
                 inputType: StreamType.Raw,
                 inlineVolume: true,
@@ -395,14 +507,16 @@ class VoiceManager {
                 resource.volume.setVolume(1);
             }
 
-            console.log('[PlayTrack] Playing audio resource...');
+            console.log('[PlayTrack] ✅ Playing audio resource...');
             session.player.play(resource);
             session.currentTrackUrl = track.trackUrl;
-            console.log('[PlayTrack] Now playing: ' + track.trackName);
+            console.log('[PlayTrack] ✅ Now playing: ' + track.trackName);
+            console.log('[PlayTrack] ====================================');
             
         } catch (error: any) {
-            console.error('[PlayTrack] Error: ' + (error.message || error));
+            console.error('[PlayTrack] ❌ Error: ' + (error.message || error));
             console.error('[PlayTrack] Stack:', error.stack);
+            console.log('[PlayTrack] ====================================');
         }
     }
 

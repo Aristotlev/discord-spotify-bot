@@ -18,6 +18,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@discordjs/opus": "^0.9.0",
     "@discordjs/voice": "^0.18.0",
     "@distube/ytdl-core": "^4.16.12",
     "@google-cloud/storage": "^7.18.0",
@@ -26,7 +27,7 @@
     "express": "^4.18.2",
     "ffmpeg-static": "^5.2.0",
     "libsodium-wrappers": "^0.7.13",
-    "opusscript": "^0.1.1",
+    "sodium-native": "^4.3.1",
     "play-dl": "^1.9.7",
     "spotify-web-api-node": "^5.0.2"
   },

@@ -1,23 +1,29 @@
 FROM node:18-slim
 
-# Install yt-dlp, ffmpeg, and dependencies
+# Install yt-dlp, ffmpeg, and dependencies including native audio libs
 RUN apt-get update && apt-get install -y \
     python3 \
     ffmpeg \
     curl \
     ca-certificates \
+    libsodium-dev \
+    libtool \
+    autoconf \
+    automake \
+    g++ \
+    make \
     && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify yt-dlp installation
-RUN yt-dlp --version
+# Verify yt-dlp and ffmpeg installation
+RUN yt-dlp --version && ffmpeg -version | head -1
 
 WORKDIR /app
 
 # Cache buster - change this to force npm reinstall
-ARG CACHEBUST=6
+ARG CACHEBUST=7
 
 # Copy package files
 COPY package*.json ./
