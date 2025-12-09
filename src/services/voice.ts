@@ -195,16 +195,17 @@ async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
 
 // Stream audio using ffmpeg from a direct URL
 function createFfmpegStream(audioUrl: string): ChildProcess {
-    console.log('[FFmpeg] Creating stream...');
+    console.log('[FFmpeg] Creating stream from URL...');
     
     const ffmpegProcess = spawn('ffmpeg', [
         '-reconnect', '1',
         '-reconnect_streamed', '1', 
         '-reconnect_delay_max', '5',
-        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '-i', audioUrl,
         '-analyzeduration', '0',
-        '-loglevel', 'warning',
+        '-loglevel', 'info',
+        '-vn',
         '-f', 's16le',
         '-ar', '48000',
         '-ac', '2',
@@ -213,9 +214,8 @@ function createFfmpegStream(audioUrl: string): ChildProcess {
 
     ffmpegProcess.stderr?.on('data', (data: Buffer) => {
         const msg = data.toString();
-        if (msg.includes('Error') || msg.includes('error')) {
-            console.error('[FFmpeg] ' + msg);
-        }
+        // Log all ffmpeg output for debugging
+        console.log('[FFmpeg] ' + msg.trim());
     });
 
     ffmpegProcess.on('error', (error) => {
@@ -223,11 +223,67 @@ function createFfmpegStream(audioUrl: string): ChildProcess {
     });
 
     ffmpegProcess.on('close', (code) => {
-        if (code !== 0 && code !== null) {
-            console.log('[FFmpeg] Process exited with code: ' + code);
-        }
+        console.log('[FFmpeg] Process closed with code: ' + code);
     });
 
+    return ffmpegProcess;
+}
+
+// Alternative: Stream directly using yt-dlp piped to ffmpeg
+function createYtdlpStream(videoUrl: string): ChildProcess {
+    console.log('[yt-dlp+FFmpeg] Creating piped stream for: ' + videoUrl);
+    
+    // Use yt-dlp to download audio and pipe directly to ffmpeg
+    const ytdlpProcess = spawn(ytdlpPath, [
+        ...YTDLP_COMMON_ARGS,
+        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        '-o', '-',  // Output to stdout
+        videoUrl
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    ytdlpProcess.stderr?.on('data', (data: Buffer) => {
+        console.log('[yt-dlp pipe] ' + data.toString().trim());
+    });
+
+    // Pipe yt-dlp output to ffmpeg
+    const ffmpegProcess = spawn('ffmpeg', [
+        '-i', 'pipe:0',  // Read from stdin
+        '-analyzeduration', '0',
+        '-loglevel', 'info',
+        '-vn',
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+        '-'
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    // Pipe yt-dlp stdout to ffmpeg stdin
+    ytdlpProcess.stdout?.pipe(ffmpegProcess.stdin!);
+
+    ffmpegProcess.stderr?.on('data', (data: Buffer) => {
+        console.log('[FFmpeg pipe] ' + data.toString().trim());
+    });
+
+    ytdlpProcess.on('error', (error) => {
+        console.error('[yt-dlp pipe] Process error: ' + error.message);
+    });
+
+    ytdlpProcess.on('close', (code) => {
+        console.log('[yt-dlp pipe] Process closed with code: ' + code);
+    });
+
+    ffmpegProcess.on('error', (error) => {
+        console.error('[FFmpeg pipe] Process error: ' + error.message);
+    });
+
+    ffmpegProcess.on('close', (code) => {
+        console.log('[FFmpeg pipe] Process closed with code: ' + code);
+    });
+
+    // Return ffmpeg process (the one with the audio output)
+    // But attach ytdlp process for cleanup
+    (ffmpegProcess as any).ytdlpProcess = ytdlpProcess;
+    
     return ffmpegProcess;
 }
 
@@ -341,7 +397,11 @@ class VoiceManager {
 
         this.stopSpotifyPolling(guildId);
         if (session.currentProcess) {
-            session.currentProcess.kill();
+            // Also kill the yt-dlp process if it exists
+            if ((session.currentProcess as any).ytdlpProcess) {
+                (session.currentProcess as any).ytdlpProcess.kill('SIGKILL');
+            }
+            session.currentProcess.kill('SIGKILL');
         }
         session.player.stop();
         session.connection.destroy();
@@ -437,9 +497,13 @@ class VoiceManager {
             console.log('[PlayTrack] Starting: ' + track.trackName + ' by ' + track.artistName);
             console.log('[PlayTrack] Spotify URL: ' + track.trackUrl);
             
-            // Kill previous ffmpeg process if any
+            // Kill previous processes if any
             if (session.currentProcess) {
                 console.log('[PlayTrack] Killing previous process');
+                // Also kill the yt-dlp process if it exists
+                if ((session.currentProcess as any).ytdlpProcess) {
+                    (session.currentProcess as any).ytdlpProcess.kill('SIGKILL');
+                }
                 session.currentProcess.kill('SIGKILL');
                 session.currentProcess = null;
             }
@@ -472,32 +536,21 @@ class VoiceManager {
                 return;
             }
             
-            // Get direct audio URL
-            console.log('[PlayTrack] Getting audio stream URL...');
-            const audioUrl = await getYouTubeAudioUrl(videoUrl);
-            if (!audioUrl) {
-                console.error('[PlayTrack] ❌ Failed to get audio URL from: ' + videoUrl);
-                console.log('[PlayTrack] ====================================');
-                return;
-            }
+            // Try direct piped streaming first (more reliable)
+            console.log('[PlayTrack] Using piped yt-dlp+ffmpeg stream...');
+            const streamProcess = createYtdlpStream(videoUrl);
+            session.currentProcess = streamProcess;
             
-            console.log('[PlayTrack] Got audio URL, length: ' + audioUrl.length);
-            console.log('[PlayTrack] Creating ffmpeg stream...');
-            
-            // Create ffmpeg stream
-            const ffmpegProcess = createFfmpegStream(audioUrl);
-            session.currentProcess = ffmpegProcess;
-            
-            // Handle ffmpeg stdout errors
-            if (!ffmpegProcess.stdout) {
-                console.error('[PlayTrack] ❌ FFmpeg stdout is null');
+            // Handle process errors
+            if (!streamProcess.stdout) {
+                console.error('[PlayTrack] ❌ Stream stdout is null');
                 console.log('[PlayTrack] ====================================');
                 return;
             }
             
             // Create audio resource
             console.log('[PlayTrack] Creating audio resource...');
-            const resource = createAudioResource(ffmpegProcess.stdout, {
+            const resource = createAudioResource(streamProcess.stdout, {
                 inputType: StreamType.Raw,
                 inlineVolume: true,
             });
