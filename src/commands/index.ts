@@ -211,6 +211,47 @@ export const spotifyLogoutCommand: Command = {
     },
 };
 
+// /sync command - alias for /connect
+export const syncCommand: Command = {
+    data: new SlashCommandBuilder()
+        .setName('sync')
+        .setDescription('Sync Spotify playback to your voice channel'),
+    
+    async execute(interaction: ChatInputCommandInteraction) {
+        const member = interaction.member as GuildMember;
+        
+        if (!member.voice.channel) {
+            await interaction.reply({
+                content: '❌ You need to be in a voice channel first!',
+                ephemeral: true,
+            });
+            return;
+        }
+
+        if (member.voice.channel.type !== ChannelType.GuildVoice) {
+            await interaction.reply({
+                content: '❌ Please join a regular voice channel.',
+                ephemeral: true,
+            });
+            return;
+        }
+
+        await interaction.deferReply();
+
+        const result = await voiceManager.connectToChannel(
+            member.voice.channel,
+            member
+        );
+
+        const embed = new EmbedBuilder()
+            .setTitle(result.success ? '✅ Syncing' : '❌ Sync Failed')
+            .setDescription(result.message)
+            .setColor(result.success ? 0x1DB954 : 0xFF0000);
+
+        await interaction.editReply({ embeds: [embed] });
+    },
+};
+
 // Helper functions
 function createProgressBar(current: number, total: number): string {
     const barLength = 15;
@@ -229,6 +270,7 @@ function formatTime(ms: number): string {
 export const commands: Command[] = [
     spotifyLoginCommand,
     connectCommand,
+    syncCommand,
     disconnectCommand,
     nowPlayingCommand,
     spotifyLogoutCommand,

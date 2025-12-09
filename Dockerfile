@@ -1,16 +1,20 @@
 FROM node:18-slim
 
-# Install ffmpeg (required for audio processing by play-dl and @discordjs/voice)
+# Install yt-dlp, ffmpeg, and dependencies
 RUN apt-get update && apt-get install -y \
+    python3 \
     ffmpeg \
+    curl \
     ca-certificates \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Cache buster - change this to force npm reinstall
-ARG CACHEBUST=3
+ARG CACHEBUST=4
 
 # Copy package files
 COPY package*.json ./

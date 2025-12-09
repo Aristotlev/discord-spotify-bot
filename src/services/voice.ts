@@ -10,95 +10,105 @@ import {
     StreamType,
 } from '@discordjs/voice';
 import { VoiceBasedChannel, GuildMember } from 'discord.js';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import { spotifyService, CurrentlyPlaying } from './spotify';
-import play, { SoundCloudTrack, YouTubeStream, SoundCloudStream } from 'play-dl';
 
-// Search YouTube using play-dl (primary source)
-async function searchYouTube(query: string): Promise<{ url: string; source: 'youtube' } | null> {
-    try {
-        console.log(`[YouTube] Searching for: ${query}`);
-        const results = await play.search(query, { 
-            source: { youtube: 'video' },
-            limit: 5  // Get more results in case first one fails
-        });
-        
-        if (results.length > 0) {
-            console.log(`[YouTube] Found ${results.length} results. First: ${results[0].title} - ${results[0].url}`);
-            return { url: results[0].url, source: 'youtube' };
-        }
-        
-        console.log(`[YouTube] No results for: ${query}`);
-        return null;
-    } catch (error: any) {
-        console.error(`[YouTube] Search error: ${error.message || error}`);
-        return null;
-    }
-}
-
-// Search SoundCloud using play-dl (fallback source)
-async function searchSoundCloud(query: string): Promise<{ url: string; source: 'soundcloud' } | null> {
-    try {
-        console.log(`[SoundCloud] Searching for: ${query}`);
-        const results = await play.search(query, { 
-            source: { soundcloud: 'tracks' },
-            limit: 5
-        });
-        
-        if (results.length > 0) {
-            const track = results[0] as SoundCloudTrack;
-            console.log(`[SoundCloud] Found: ${track.name} - ${track.url}`);
-            return { url: track.url, source: 'soundcloud' };
-        }
-        
-        console.log(`[SoundCloud] No results for: ${query}`);
-        return null;
-    } catch (error: any) {
-        console.error(`[SoundCloud] Search error: ${error.message || error}`);
-        return null;
-    }
-}
-
-// Search for audio with multiple query variations
-async function searchAudio(trackName: string, artistName: string): Promise<{ url: string; source: 'youtube' | 'soundcloud' } | null> {
-    // Try different search queries in order of specificity
-    const queries = [
-        `${trackName} ${artistName} official audio`,
-        `${trackName} ${artistName}`,
-        `${trackName} ${artistName} lyrics`,
-        `${trackName}`,
+// Find yt-dlp binary path
+function getYtdlpPath(): string {
+    const paths = [
+        '/usr/local/bin/yt-dlp',
+        '/opt/homebrew/bin/yt-dlp',
+        '/usr/bin/yt-dlp',
+        'yt-dlp'
     ];
     
-    // Try YouTube with each query
-    for (const query of queries) {
-        const youtubeResult = await searchYouTube(query);
-        if (youtubeResult) {
-            return youtubeResult;
-        }
+    for (const p of paths) {
+        try {
+            execSync(p + ' --version', { stdio: 'ignore' });
+            console.log('[yt-dlp] Found at: ' + p);
+            return p;
+        } catch {}
     }
     
-    // Fallback to SoundCloud
-    console.log('[Audio] YouTube failed for all queries, trying SoundCloud...');
-    for (const query of queries.slice(0, 2)) { // Only try first 2 queries for SoundCloud
-        const soundcloudResult = await searchSoundCloud(query);
-        if (soundcloudResult) {
-            return soundcloudResult;
-        }
-    }
-    
-    return null;
+    console.log('[yt-dlp] Not found in common paths, using PATH');
+    return 'yt-dlp';
 }
 
-// Get audio stream from URL using play-dl
-async function getAudioStream(url: string, source: 'youtube' | 'soundcloud'): Promise<YouTubeStream | SoundCloudStream | null> {
-    try {
-        console.log(`[Stream] Getting ${source} stream for: ${url}`);
-        const stream = await play.stream(url);
-        console.log(`[Stream] Created successfully: type=${stream.type}`);
-        return stream;
-    } catch (error: any) {
-        console.error(`[Stream] Error getting ${source} stream: ${error.message || error}`);
-        return null;
-    }
+const ytdlpPath = getYtdlpPath();
+
+// Search YouTube using yt-dlp
+async function searchYouTube(query: string): Promise<string | null> {
+    return new Promise((resolve) => {
+        try {
+            console.log('[YouTube] Searching for: ' + query);
+            const cmd = ytdlpPath + ' --no-warnings --flat-playlist --print url "ytsearch1:' + query + '"';
+            const result = execSync(cmd, { encoding: 'utf-8', timeout: 15000 }).trim();
+            
+            if (result && result.startsWith('http')) {
+                console.log('[YouTube] Found: ' + result);
+                resolve(result);
+            } else {
+                console.log('[YouTube] No results');
+                resolve(null);
+            }
+        } catch (error: any) {
+            console.error('[YouTube] Search error: ' + (error.message || error));
+            resolve(null);
+        }
+    });
+}
+
+// Get direct audio URL from YouTube using yt-dlp
+async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
+    return new Promise((resolve) => {
+        try {
+            console.log('[YouTube] Getting audio URL for: ' + videoUrl);
+            const cmd = ytdlpPath + ' -f bestaudio --get-url "' + videoUrl + '"';
+            const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 }).trim();
+            
+            if (result && result.startsWith('http')) {
+                console.log('[YouTube] Got audio URL');
+                resolve(result);
+            } else {
+                console.log('[YouTube] Failed to get audio URL');
+                resolve(null);
+            }
+        } catch (error: any) {
+            console.error('[YouTube] Audio URL error: ' + (error.message || error));
+            resolve(null);
+        }
+    });
+}
+
+// Stream audio using ffmpeg from a direct URL
+function createFfmpegStream(audioUrl: string): ChildProcess {
+    console.log('[FFmpeg] Creating stream...');
+    
+    const ffmpegProcess = spawn('ffmpeg', [
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', audioUrl,
+        '-analyzeduration', '0',
+        '-loglevel', '0',
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+        'pipe:1'
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    ffmpegProcess.stderr?.on('data', (data: Buffer) => {
+        const msg = data.toString();
+        if (msg.includes('Error') || msg.includes('error')) {
+            console.error('[FFmpeg] ' + msg);
+        }
+    });
+
+    ffmpegProcess.on('error', (error) => {
+        console.error('[FFmpeg] Process error: ' + error.message);
+    });
+
+    return ffmpegProcess;
 }
 
 interface VoiceSession {
@@ -109,6 +119,7 @@ interface VoiceSession {
     controllingUserId: string;
     pollingInterval: NodeJS.Timeout | null;
     currentTrackUrl: string | null;
+    currentProcess: ChildProcess | null;
 }
 
 class VoiceManager {
@@ -178,6 +189,7 @@ class VoiceManager {
                 controllingUserId: member.id,
                 pollingInterval: null,
                 currentTrackUrl: null,
+                currentProcess: null,
             };
 
             this.sessions.set(guildId, session);
@@ -208,6 +220,9 @@ class VoiceManager {
         }
 
         this.stopSpotifyPolling(guildId);
+        if (session.currentProcess) {
+            session.currentProcess.kill();
+        }
         session.player.stop();
         session.connection.destroy();
         this.sessions.delete(guildId);
@@ -261,6 +276,10 @@ class VoiceManager {
                 // Nothing playing, stop if something is playing
                 if (session.player.state.status !== AudioPlayerStatus.Idle) {
                     console.log('Spotify: Nothing playing, stopping audio');
+                    if (session.currentProcess) {
+                        session.currentProcess.kill();
+                        session.currentProcess = null;
+                    }
                     session.player.stop();
                     session.currentTrackUrl = null;
                 }
@@ -294,35 +313,54 @@ class VoiceManager {
         if (!session || !track.trackUrl) return;
 
         try {
-            console.log(`[PlayTrack] Starting playback for: ${track.trackName} by ${track.artistName}`);
+            console.log('[PlayTrack] Starting: ' + track.trackName + ' by ' + track.artistName);
             
-            // Search for the track - YouTube primary, SoundCloud fallback
-            const audioResult = await searchAudio(track.trackName, track.artistName);
+            // Kill previous ffmpeg process if any
+            if (session.currentProcess) {
+                session.currentProcess.kill();
+                session.currentProcess = null;
+            }
             
-            if (!audioResult) {
-                console.log(`[PlayTrack] No audio results found for: ${track.trackName} by ${track.artistName}`);
+            // Search queries in order of preference
+            const queries = [
+                track.trackName + ' ' + track.artistName + ' official audio',
+                track.trackName + ' ' + track.artistName,
+                track.trackName + ' audio',
+            ];
+            
+            // Find YouTube video
+            let videoUrl: string | null = null;
+            for (const query of queries) {
+                videoUrl = await searchYouTube(query);
+                if (videoUrl) break;
+            }
+            
+            if (!videoUrl) {
+                console.log('[PlayTrack] No YouTube results for: ' + track.trackName);
                 return;
             }
-
-            console.log(`[PlayTrack] Found on ${audioResult.source}: ${audioResult.url}`);
             
-            // Get audio stream using play-dl
-            const stream = await getAudioStream(audioResult.url, audioResult.source);
-            
-            if (!stream) {
-                console.log(`[PlayTrack] Failed to get stream for: ${audioResult.url}`);
+            // Get direct audio URL
+            const audioUrl = await getYouTubeAudioUrl(videoUrl);
+            if (!audioUrl) {
+                console.log('[PlayTrack] Failed to get audio URL');
                 return;
             }
-
-            const resource = createAudioResource(stream.stream, {
-                inputType: stream.type,
+            
+            // Create ffmpeg stream
+            const ffmpegProcess = createFfmpegStream(audioUrl);
+            session.currentProcess = ffmpegProcess;
+            
+            const resource = createAudioResource(ffmpegProcess.stdout!, {
+                inputType: StreamType.Raw,
             });
 
             session.player.play(resource);
             session.currentTrackUrl = track.trackUrl;
-            console.log(`[PlayTrack] Now playing (via ${audioResult.source}): ${track.trackName} by ${track.artistName}`);
+            console.log('[PlayTrack] Now playing: ' + track.trackName);
+            
         } catch (error: any) {
-            console.error(`[PlayTrack] Error: ${error.message || error}`);
+            console.error('[PlayTrack] Error: ' + (error.message || error));
         }
     }
 
