@@ -9,7 +9,7 @@ import {
 } from 'discord.js';
 import { config, validateConfig } from './config';
 import { commands } from './commands';
-import { startServer } from './server';
+import { startServer, stopServer } from './server';
 
 // Global error handlers to prevent crashes
 process.on('unhandledRejection', (reason, promise) => {
@@ -22,6 +22,28 @@ process.on('uncaughtException', (error) => {
 
 // Discord client - initialized lazily
 let client: Client | null = null;
+
+// Graceful shutdown handler
+async function gracefulShutdown(signal: string): Promise<void> {
+    console.log(`\n🛑 Received ${signal}. Shutting down gracefully...`);
+    
+    // Stop the HTTP server
+    await stopServer();
+    
+    // Destroy Discord client if it exists
+    if (client) {
+        console.log('🔌 Disconnecting from Discord...');
+        client.destroy();
+        console.log('✅ Discord client destroyed');
+    }
+    
+    console.log('👋 Goodbye!');
+    process.exit(0);
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 function getClient(): Client {
     if (!client) {

@@ -75,28 +75,63 @@ app.get('/', (req, res) => {
     res.json({ status: 'ok', service: 'Discord Spotify Bot' });
 });
 
+// Store server reference for graceful shutdown
+let server: https.Server | http.Server | null = null;
+
 export function startServer(): void {
     const host = '0.0.0.0';
     
-    // Try to load SSL certificates for HTTPS
+    // Check if running on Cloud Run (Cloud Run sets K_SERVICE env var)
+    const isCloudRun = !!process.env.K_SERVICE;
+    
+    // Try to load SSL certificates for HTTPS (only for local/self-hosted)
     const certPath = path.join(process.cwd(), 'certs', 'cert.pem');
     const keyPath = path.join(process.cwd(), 'certs', 'key.pem');
     
-    if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
-        // HTTPS server with SSL certificates
+    // Use HTTP on Cloud Run (it handles HTTPS termination), HTTPS otherwise if certs exist
+    if (!isCloudRun && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+        // HTTPS server with SSL certificates (for self-hosted)
         const httpsOptions = {
             key: fs.readFileSync(keyPath),
             cert: fs.readFileSync(certPath),
         };
         
-        https.createServer(httpsOptions, app).listen(config.server.port, host, () => {
+        server = https.createServer(httpsOptions, app).listen(config.server.port, host, () => {
             console.log(`🔒 HTTPS OAuth callback server running on https://${host}:${config.server.port}`);
         });
     } else {
-        // Fallback to HTTP (for local development)
-        console.log('⚠️ SSL certificates not found, falling back to HTTP');
-        app.listen(config.server.port, host, () => {
-            console.log(`OAuth callback server running on http://${host}:${config.server.port}`);
+        // HTTP server (Cloud Run handles HTTPS termination, or local dev without certs)
+        if (isCloudRun) {
+            console.log('☁️ Running on Cloud Run - using HTTP (HTTPS handled by Cloud Run)');
+        } else {
+            console.log('⚠️ SSL certificates not found, using HTTP');
+        }
+        server = app.listen(config.server.port, host, () => {
+            console.log(`🌐 HTTP server running on http://${host}:${config.server.port}`);
         });
     }
+    
+    // Handle server errors (like port already in use)
+    server.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE') {
+            console.error(`❌ Port ${config.server.port} is already in use!`);
+            console.error('Try: sudo fuser -k ' + config.server.port + '/tcp');
+        } else {
+            console.error('Server error:', error);
+        }
+    });
+}
+
+export function stopServer(): Promise<void> {
+    return new Promise((resolve) => {
+        if (server) {
+            console.log('🛑 Closing server...');
+            server.close(() => {
+                console.log('✅ Server closed');
+                resolve();
+            });
+        } else {
+            resolve();
+        }
+    });
 }
