@@ -1,10 +1,16 @@
+
 #!/bin/bash
 # Deployment script for Google Compute Engine VM
+# Simple, direct deployment - no Cloudflare needed
 
 set -e
 
 echo "🚀 Discord Spotify Bot - VM Deployment Script"
 echo "=============================================="
+
+# Get external IP
+EXTERNAL_IP=$(curl -s ifconfig.me)
+echo "🌐 Your VM's external IP: $EXTERNAL_IP"
 
 # Update system
 echo "📦 Updating system packages..."
@@ -50,22 +56,41 @@ npm ci
 echo "🔨 Building TypeScript..."
 npm run build
 
+# Generate self-signed SSL certificate for the VM's IP
+echo "🔒 Setting up SSL certificate..."
+mkdir -p certs
+if [ ! -f "certs/cert.pem" ]; then
+    echo "📜 Generating self-signed SSL certificate for $EXTERNAL_IP..."
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout certs/key.pem \
+        -out certs/cert.pem \
+        -subj "/CN=$EXTERNAL_IP" \
+        -addext "subjectAltName=IP:$EXTERNAL_IP"
+    echo "✅ SSL certificate created"
+else
+    echo "✅ SSL certificate already exists"
+fi
+
 # Check if .env exists
 if [ ! -f ".env" ]; then
     echo ""
-    echo "⚠️  No .env file found! Create one with:"
+    echo "⚠️  No .env file found!"
     echo ""
-    echo "cat > .env << 'EOF'"
-    echo "DISCORD_TOKEN=your_discord_token"
-    echo "DISCORD_CLIENT_ID=your_discord_client_id"
-    echo "SPOTIFY_CLIENT_ID=your_spotify_client_id"
-    echo "SPOTIFY_CLIENT_SECRET=your_spotify_client_secret"
-    echo "SPOTIFY_REDIRECT_URI=https://YOUR_VM_IP:8080/callback"
-    echo "PORT=8080"
-    echo "EOF"
+    echo "Creating template .env file..."
+    cat > .env << EOF
+DISCORD_TOKEN=your_discord_token_here
+DISCORD_CLIENT_ID=your_discord_client_id_here
+SPOTIFY_CLIENT_ID=your_spotify_client_id_here
+SPOTIFY_CLIENT_SECRET=your_spotify_client_secret_here
+SPOTIFY_REDIRECT_URI=https://${EXTERNAL_IP}:8080/callback
+PORT=8080
+EOF
     echo ""
-    echo "Then run: pm2 start dist/index.js --name discord-spotify-bot"
-    exit 1
+    echo "📝 Edit the .env file with your actual credentials:"
+    echo "   nano .env"
+    echo ""
+    echo "Then restart with: pm2 restart discord-spotify-bot"
+    echo ""
 fi
 
 # Stop existing pm2 process if running
@@ -83,12 +108,30 @@ pm2 startup | tail -1 | bash 2>/dev/null || echo "Run 'pm2 startup' manually if 
 echo ""
 echo "✅ Deployment complete!"
 echo ""
-echo "📋 Useful commands:"
-echo "   pm2 logs discord-spotify-bot  - View logs"
-echo "   pm2 restart discord-spotify-bot - Restart bot"
-echo "   pm2 status - Check status"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📋 NEXT STEPS:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "🔒 Don't forget to:"
-echo "   1. Open port 8080 in GCP firewall for OAuth callback"
-echo "   2. Set up SSL certs in ./certs/ folder (or use Cloudflare)"
-echo "   3. Update Spotify redirect URI to match your VM's IP/domain"
+echo "1️⃣  Update Spotify Dashboard:"
+echo "    Add this redirect URI: https://${EXTERNAL_IP}:8080/callback"
+echo "    URL: https://developer.spotify.com/dashboard"
+echo ""
+echo "2️⃣  Edit your .env file with real credentials:"
+echo "    nano ~/discord-spotify-bot/.env"
+echo ""
+echo "3️⃣  Restart the bot:"
+echo "    pm2 restart discord-spotify-bot"
+echo ""
+echo "4️⃣  Check it's working:"
+echo "    pm2 logs discord-spotify-bot"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📋 Useful commands:"
+echo "   pm2 logs discord-spotify-bot   - View logs"
+echo "   pm2 restart discord-spotify-bot - Restart bot"
+echo "   pm2 status                      - Check status"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "⚠️  NOTE: When using /login, your browser will show a security warning"
+echo "    because of the self-signed certificate. Just click 'Advanced' and"
+echo "    'Proceed' - this is safe since it's your own server."
