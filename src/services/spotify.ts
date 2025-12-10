@@ -20,6 +20,7 @@ export interface SpotifyUserSession {
 }
 
 export interface CurrentlyPlaying {
+    trackId: string;
     trackName: string;
     artistName: string;
     albumName: string;
@@ -226,6 +227,7 @@ class SpotifyService {
             const track = response.body.item;
             
             return {
+                trackId: track.id,
                 trackName: track.name,
                 artistName: track.artists.map((a: { name: string }) => a.name).join(', '),
                 albumName: track.album.name,

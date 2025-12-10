@@ -16,7 +16,12 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', (error: NodeJS.ErrnoException) => {
+    // EPIPE errors happen when we kill audio streams - don't crash
+    if (error.code === 'EPIPE' || error.code === 'ERR_STREAM_DESTROYED') {
+        console.log('[Process] Ignoring EPIPE/stream error (expected during track changes)');
+        return;
+    }
     console.error('Uncaught Exception:', error);
 });
 

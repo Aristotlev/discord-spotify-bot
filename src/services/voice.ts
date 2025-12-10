@@ -75,16 +75,21 @@ function getYtdlpPath(): string {
     return 'yt-dlp';
 }
 
-// Enhanced yt-dlp args to bypass bot detection - updated for latest YouTube changes
+// Enhanced yt-dlp args to bypass bot detection - updated for latest YouTube changes (Dec 2025)
 const YTDLP_COMMON_ARGS = [
     '--no-warnings',
     '--no-check-certificates',
     '--geo-bypass',
-    '--extractor-args', 'youtube:player_client=web_creator,mweb',
+    // Use default client with fallbacks - let yt-dlp figure it out
+    '--extractor-args', 'youtube:player_client=default,web',
     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    // Note: --cookies-from-browser removed - doesn't work on headless VMs
     '--no-playlist',
     '--no-cache-dir',
+    '--extractor-retries', '5',
+    '--socket-timeout', '30',
+    '--retries', '3',
+    // Age gate bypass
+    '--age-limit', '25',
 ];
 
 // Best audio format selection - prioritize Opus for Discord compatibility
@@ -350,9 +355,10 @@ function createYtdlpStream(videoUrl: string): ChildProcess {
     console.log('[yt-dlp+FFmpeg] Creating piped stream for: ' + videoUrl);
     
     // Use yt-dlp to download audio and pipe directly to ffmpeg
+    // Remove format selector - let yt-dlp pick any available format
     const ytdlpProcess = spawn(getYtdlpPath(), [
         ...YTDLP_COMMON_ARGS,
-        '-f', AUDIO_FORMAT_SELECTOR,
+        '-f', 'bestaudio/best',  // Simplified - just get any audio
         '-o', '-',  // Output to stdout
         videoUrl
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -365,7 +371,7 @@ function createYtdlpStream(videoUrl: string): ChildProcess {
     const ffmpegProcess = spawn('ffmpeg', [
         '-i', 'pipe:0',  // Read from stdin
         '-analyzeduration', '0',
-        '-loglevel', 'info',
+        '-loglevel', 'warning',  // Reduce log spam
         '-vn',
         '-f', 's16le',
         '-ar', '48000',
@@ -373,11 +379,32 @@ function createYtdlpStream(videoUrl: string): ChildProcess {
         '-'
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
+    // Handle EPIPE errors on the pipe - this happens when process is killed
+    ffmpegProcess.stdin?.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') {
+            // Expected when we kill the process, ignore silently
+        } else {
+            console.error('[FFmpeg stdin] Error:', err.message);
+        }
+    });
+
+    ytdlpProcess.stdout?.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') {
+            // Expected when we kill the process, ignore silently
+        } else {
+            console.error('[yt-dlp stdout] Error:', err.message);
+        }
+    });
+
     // Pipe yt-dlp stdout to ffmpeg stdin
     ytdlpProcess.stdout?.pipe(ffmpegProcess.stdin!);
 
     ffmpegProcess.stderr?.on('data', (data: Buffer) => {
-        console.log('[FFmpeg pipe] ' + data.toString().trim());
+        const msg = data.toString().trim();
+        // Only log non-progress messages
+        if (!msg.includes('size=') && !msg.includes('time=')) {
+            console.log('[FFmpeg pipe] ' + msg);
+        }
     });
 
     ytdlpProcess.on('error', (error) => {
@@ -410,8 +437,9 @@ interface VoiceSession {
     channelId: string;
     controllingUserId: string;
     pollingInterval: NodeJS.Timeout | null;
-    currentTrackUrl: string | null;
+    currentTrackId: string | null;
     currentProcess: ChildProcess | null;
+    lastSyncTime: number;
 }
 
 class VoiceManager {
@@ -480,8 +508,9 @@ class VoiceManager {
                 channelId: channel.id,
                 controllingUserId: member.id,
                 pollingInterval: null,
-                currentTrackUrl: null,
+                currentTrackId: null,
                 currentProcess: null,
+                lastSyncTime: 0,
             };
 
             this.sessions.set(guildId, session);
@@ -542,10 +571,10 @@ class VoiceManager {
         const session = this.sessions.get(guildId);
         if (!session) return;
 
-        // Poll every 5 seconds
+        // Poll every 2 seconds for better track following
         session.pollingInterval = setInterval(async () => {
             await this.syncSpotifyPlayback(guildId);
-        }, 5000);
+        }, 2000);
 
         // Initial sync
         this.syncSpotifyPlayback(guildId);
@@ -571,36 +600,49 @@ class VoiceManager {
             if (!currentlyPlaying) {
                 // Nothing playing, stop if something is playing
                 if (session.player.state.status !== AudioPlayerStatus.Idle) {
-                    console.log('Spotify: Nothing playing, stopping audio');
+                    console.log('[Sync] Spotify: Nothing playing, stopping audio');
                     if (session.currentProcess) {
-                        session.currentProcess.kill();
+                        if ((session.currentProcess as any).ytdlpProcess) {
+                            (session.currentProcess as any).ytdlpProcess.kill('SIGKILL');
+                        }
+                        session.currentProcess.kill('SIGKILL');
                         session.currentProcess = null;
                     }
                     session.player.stop();
-                    session.currentTrackUrl = null;
+                    session.currentTrackId = null;
                 }
                 return;
             }
             
-            console.log(`Spotify sync: ${currentlyPlaying.trackName} - Playing: ${currentlyPlaying.isPlaying}`);
+            const now = Date.now();
+            console.log(`[Sync] Track: "${currentlyPlaying.trackName}" | ID: ${currentlyPlaying.trackId} | Playing: ${currentlyPlaying.isPlaying} | Progress: ${Math.round(currentlyPlaying.progressMs / 1000)}s`);
 
             if (!currentlyPlaying.isPlaying) {
                 // Paused on Spotify
                 if (session.player.state.status === AudioPlayerStatus.Playing) {
+                    console.log('[Sync] Spotify paused, pausing audio');
                     session.player.pause();
                 }
                 return;
             }
 
-            // If playing and it's a different track, play it
-            if (currentlyPlaying.trackUrl && currentlyPlaying.trackUrl !== session.currentTrackUrl) {
+            // If playing and it's a different track, play it (compare by track ID)
+            if (currentlyPlaying.trackId !== session.currentTrackId) {
+                console.log(`[Sync] New track detected! Old: ${session.currentTrackId} -> New: ${currentlyPlaying.trackId}`);
                 await this.playTrack(guildId, currentlyPlaying);
+                session.lastSyncTime = now;
             } else if (session.player.state.status === AudioPlayerStatus.Paused) {
                 // Resume if was paused
+                console.log('[Sync] Resuming paused audio');
                 session.player.unpause();
+            } else if (session.player.state.status === AudioPlayerStatus.Idle && session.currentTrackId) {
+                // Player went idle but track should still be playing - restart it
+                console.log('[Sync] Player idle but track should be playing, restarting...');
+                await this.playTrack(guildId, currentlyPlaying);
+                session.lastSyncTime = now;
             }
         } catch (error) {
-            console.error('Error syncing Spotify playback:', error);
+            console.error('[Sync] Error syncing Spotify playback:', error);
         }
     }
 
@@ -678,8 +720,8 @@ class VoiceManager {
 
             console.log('[PlayTrack] ✅ Playing audio resource...');
             session.player.play(resource);
-            session.currentTrackUrl = track.trackUrl;
-            console.log('[PlayTrack] ✅ Now playing: ' + track.trackName);
+            session.currentTrackId = track.trackId;
+            console.log('[PlayTrack] ✅ Now playing: ' + track.trackName + ' (ID: ' + track.trackId + ')');
             console.log('[PlayTrack] ====================================');
             
         } catch (error: any) {
@@ -690,7 +732,7 @@ class VoiceManager {
     }
 
     getCurrentTrack(guildId: string): string | null {
-        return this.sessions.get(guildId)?.currentTrackUrl ?? null;
+        return this.sessions.get(guildId)?.currentTrackId ?? null;
     }
 }
 
