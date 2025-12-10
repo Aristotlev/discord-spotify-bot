@@ -25,9 +25,9 @@ sudo apt-get install -y nodejs
 echo "📦 Installing ffmpeg and dependencies..."
 sudo apt-get install -y ffmpeg python3 curl ca-certificates git build-essential
 
-# Install native audio dependencies for @discordjs/opus
-echo "📦 Installing native audio libraries for Opus..."
-sudo apt-get install -y libtool autoconf automake libopus-dev
+# Install native audio dependencies for @discordjs/opus and sodium encryption
+echo "📦 Installing native audio libraries for Opus and sodium..."
+sudo apt-get install -y libtool autoconf automake libopus-dev libsodium-dev
 
 # Install yt-dlp
 echo "📦 Installing yt-dlp..."

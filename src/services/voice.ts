@@ -21,8 +21,33 @@ try {
     console.warn('[Opus] Native @discordjs/opus not available, falling back to opusscript');
 }
 
+// Verify sodium encryption is available (required for Discord voice)
+try {
+    // Try sodium-native first (faster native implementation)
+    require('sodium-native');
+    console.log('[Sodium] Native sodium-native bindings loaded successfully');
+} catch (e) {
+    try {
+        // Fall back to libsodium-wrappers (WASM implementation)
+        require('libsodium-wrappers');
+        console.log('[Sodium] Using libsodium-wrappers (WASM fallback)');
+    } catch (e2) {
+        console.error('[Sodium] ❌ No sodium implementation found! Voice will NOT work.');
+        console.error('[Sodium] Install with: npm install sodium-native');
+    }
+}
+
 // Lazy-loaded yt-dlp binary path
 let ytdlpPath: string | null = null;
+
+// Verify ffmpeg is available
+try {
+    execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000 });
+    console.log('[FFmpeg] ffmpeg found in PATH');
+} catch (e) {
+    console.error('[FFmpeg] ❌ ffmpeg not found! Audio streaming will NOT work.');
+    console.error('[FFmpeg] Install with: sudo apt-get install ffmpeg');
+}
 
 // Find yt-dlp binary path - called lazily when first needed
 function getYtdlpPath(): string {
@@ -57,7 +82,7 @@ const YTDLP_COMMON_ARGS = [
     '--geo-bypass',
     '--extractor-args', 'youtube:player_client=web_creator,mweb',
     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    '--cookies-from-browser', 'chrome',  // Use browser cookies if available
+    // Note: --cookies-from-browser removed - doesn't work on headless VMs
     '--no-playlist',
     '--no-cache-dir',
 ];

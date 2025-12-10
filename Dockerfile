@@ -1,11 +1,17 @@
 FROM node:20-slim
 
-# Install yt-dlp, ffmpeg, and dependencies
+# Install yt-dlp, ffmpeg, and dependencies for native audio/voice
 RUN apt-get update && apt-get install -y \
     python3 \
     ffmpeg \
     curl \
     ca-certificates \
+    build-essential \
+    libtool \
+    autoconf \
+    automake \
+    libopus-dev \
+    libsodium-dev \
     && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp \
     && apt-get clean \
