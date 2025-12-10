@@ -88,17 +88,32 @@ export function startServer(): void {
     const certPath = path.join(process.cwd(), 'certs', 'cert.pem');
     const keyPath = path.join(process.cwd(), 'certs', 'key.pem');
     
+    // Debug logging
+    console.log(`🔍 CWD: ${process.cwd()}`);
+    console.log(`🔍 certPath: ${certPath} exists: ${fs.existsSync(certPath)}`);
+    console.log(`🔍 keyPath: ${keyPath} exists: ${fs.existsSync(keyPath)}`);
+    console.log(`🔍 isCloudRun: ${isCloudRun}`);
+    
     // Use HTTP on Cloud Run (it handles HTTPS termination), HTTPS otherwise if certs exist
     if (!isCloudRun && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
         // HTTPS server with SSL certificates (for self-hosted)
-        const httpsOptions = {
-            key: fs.readFileSync(keyPath),
-            cert: fs.readFileSync(certPath),
-        };
-        
-        server = https.createServer(httpsOptions, app).listen(config.server.port, host, () => {
-            console.log(`🔒 HTTPS OAuth callback server running on https://${host}:${config.server.port}`);
-        });
+        try {
+            const httpsOptions = {
+                key: fs.readFileSync(keyPath),
+                cert: fs.readFileSync(certPath),
+            };
+            console.log('🔑 Loaded SSL certificates, starting HTTPS server...');
+            
+            server = https.createServer(httpsOptions, app).listen(config.server.port, host, () => {
+                console.log(`🔒 HTTPS OAuth callback server running on https://${host}:${config.server.port}`);
+            });
+        } catch (err) {
+            console.error('❌ Failed to start HTTPS server:', err);
+            console.log('⚠️ Falling back to HTTP...');
+            server = app.listen(config.server.port, host, () => {
+                console.log(`🌐 HTTP server running on http://${host}:${config.server.port}`);
+            });
+        }
     } else {
         // HTTP server (Cloud Run handles HTTPS termination, or local dev without certs)
         if (isCloudRun) {

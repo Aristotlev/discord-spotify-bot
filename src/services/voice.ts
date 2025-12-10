@@ -13,6 +13,14 @@ import { VoiceBasedChannel, GuildMember } from 'discord.js';
 import { spawn, execSync, ChildProcess } from 'child_process';
 import { spotifyService, CurrentlyPlaying } from './spotify';
 
+// Verify native Opus bindings are available
+try {
+    require('@discordjs/opus');
+    console.log('[Opus] Native @discordjs/opus bindings loaded successfully');
+} catch (e) {
+    console.warn('[Opus] Native @discordjs/opus not available, falling back to opusscript');
+}
+
 // Lazy-loaded yt-dlp binary path
 let ytdlpPath: string | null = null;
 
@@ -21,10 +29,11 @@ function getYtdlpPath(): string {
     if (ytdlpPath) return ytdlpPath;
     
     const paths = [
-        '/usr/local/bin/yt-dlp',
-        '/opt/homebrew/bin/yt-dlp',
-        '/usr/bin/yt-dlp',
-        'yt-dlp'
+        '/opt/homebrew/bin/yt-dlp',  // macOS Homebrew (Apple Silicon) - prioritized
+        '/usr/local/bin/yt-dlp',     // macOS Homebrew (Intel) / Linux common
+        '/usr/bin/yt-dlp',           // Linux system install
+        '/home/linuxbrew/.linuxbrew/bin/yt-dlp', // Linuxbrew
+        'yt-dlp'                     // Fall back to PATH
     ];
     
     for (const p of paths) {
@@ -46,9 +55,71 @@ const YTDLP_COMMON_ARGS = [
     '--no-warnings',
     '--no-check-certificates',
     '--geo-bypass',
-    '--extractor-args', 'youtube:player_client=ios,web',
-    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    '--extractor-args', 'youtube:player_client=web_creator,mweb',
+    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    '--cookies-from-browser', 'chrome',  // Use browser cookies if available
+    '--no-playlist',
+    '--no-cache-dir',
 ];
+
+// Best audio format selection - prioritize Opus for Discord compatibility
+const AUDIO_FORMAT_SELECTOR = 'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best';
+
+// Fallback: Search YouTube using curl (scraping) - works when yt-dlp is blocked
+async function searchYouTubeCurl(query: string): Promise<string | null> {
+    return new Promise((resolve) => {
+        const encodedQuery = encodeURIComponent(query);
+        console.log('[YouTube-Curl] Searching for: ' + query);
+        
+        const proc = spawn('curl', [
+            '-s',
+            '-L',
+            '--max-time', '15',
+            '-H', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '-H', 'Accept-Language: en-US,en;q=0.9',
+            `https://www.youtube.com/results?search_query=${encodedQuery}`
+        ], {
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        
+        let stdout = '';
+        
+        proc.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+        
+        proc.on('error', (error) => {
+            console.error('[YouTube-Curl] Process error: ' + error.message);
+            resolve(null);
+        });
+        
+        proc.on('close', (code) => {
+            if (code === 0) {
+                // Extract video ID from the search results page
+                const match = stdout.match(/watch\?v=([a-zA-Z0-9_-]{11})/);
+                if (match) {
+                    const videoUrl = `https://www.youtube.com/watch?v=${match[1]}`;
+                    console.log('[YouTube-Curl] Found: ' + videoUrl);
+                    resolve(videoUrl);
+                } else {
+                    console.log('[YouTube-Curl] No video ID found in response');
+                    resolve(null);
+                }
+            } else {
+                console.log('[YouTube-Curl] curl failed with code ' + code);
+                resolve(null);
+            }
+        });
+        
+        setTimeout(() => {
+            if (!proc.killed) {
+                console.log('[YouTube-Curl] Search timeout');
+                proc.kill('SIGKILL');
+                resolve(null);
+            }
+        }, 20000);
+    });
+}
 
 // Search YouTube using yt-dlp with improved error handling
 async function searchYouTube(query: string): Promise<string | null> {
@@ -73,6 +144,7 @@ async function searchYouTube(query: string): Promise<string | null> {
         
         let stdout = '';
         let stderr = '';
+        let resolved = false;
         
         proc.stdout.on('data', (data) => {
             stdout += data.toString();
@@ -84,10 +156,17 @@ async function searchYouTube(query: string): Promise<string | null> {
         
         proc.on('error', (error) => {
             console.error('[YouTube] Process error: ' + error.message);
-            resolve(null);
+            if (!resolved) {
+                resolved = true;
+                // Fallback to curl method
+                console.log('[YouTube] Falling back to curl search...');
+                searchYouTubeCurl(query).then(resolve);
+            }
         });
         
         proc.on('close', (code) => {
+            if (resolved) return;
+            
             if (stderr) {
                 console.log('[YouTube] stderr: ' + stderr.substring(0, 500));
             }
@@ -95,21 +174,27 @@ async function searchYouTube(query: string): Promise<string | null> {
             const result = stdout.trim();
             if (code === 0 && result && result.startsWith('http')) {
                 console.log('[YouTube] Found: ' + result);
+                resolved = true;
                 resolve(result);
             } else {
-                console.log('[YouTube] Search failed with code ' + code + ', output: ' + result.substring(0, 200));
-                resolve(null);
+                console.log('[YouTube] Search failed with code ' + code + ', falling back to curl...');
+                resolved = true;
+                // Fallback to curl method
+                searchYouTubeCurl(query).then(resolve);
             }
         });
         
-        // Timeout handler
+        // Timeout handler - try curl fallback
         setTimeout(() => {
             if (!proc.killed) {
-                console.log('[YouTube] Search timeout, killing process');
+                console.log('[YouTube] Search timeout, killing process and trying curl...');
                 proc.kill('SIGKILL');
-                resolve(null);
+                if (!resolved) {
+                    resolved = true;
+                    searchYouTubeCurl(query).then(resolve);
+                }
             }
-        }, 25000);
+        }, 10000); // Reduced timeout since we have fallback
     });
 }
 
@@ -118,13 +203,14 @@ async function getYouTubeAudioUrl(videoUrl: string): Promise<string | null> {
     return new Promise((resolve) => {
         console.log('[YouTube] Getting audio URL for: ' + videoUrl);
         
-        // Try multiple format combinations
+        // Try multiple format combinations - prioritize Opus for Discord
         const formatPriority = [
-            'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-            '140',  // m4a audio
-            '251',  // webm opus
-            '250',  // webm opus lower quality
-            '249',  // webm opus lowest
+            AUDIO_FORMAT_SELECTOR,              // Best audio with Opus preference
+            '251',                              // webm opus 160k (best quality)
+            '250',                              // webm opus 70k
+            '249',                              // webm opus 50k
+            '140',                              // m4a audio 128k
+            'bestaudio[ext=webm]/bestaudio',   // Generic fallback
         ];
         
         let currentIndex = 0;
@@ -241,7 +327,7 @@ function createYtdlpStream(videoUrl: string): ChildProcess {
     // Use yt-dlp to download audio and pipe directly to ffmpeg
     const ytdlpProcess = spawn(getYtdlpPath(), [
         ...YTDLP_COMMON_ARGS,
-        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        '-f', AUDIO_FORMAT_SELECTOR,
         '-o', '-',  // Output to stdout
         videoUrl
     ], { stdio: ['ignore', 'pipe', 'pipe'] });

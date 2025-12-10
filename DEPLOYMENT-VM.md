@@ -124,6 +124,36 @@ pm2 restart discord-spotify-bot
 
 ## Troubleshooting
 
+**Bot stops after VM restarts?**
+- SSH back into your VM and run:
+  ```bash
+  # Check if pm2 startup is configured
+  pm2 startup
+  
+  # Run the command it outputs (starts with sudo...)
+  sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u YOUR_USERNAME --hp /home/YOUR_USERNAME
+  
+  # Save current processes
+  pm2 save
+  
+  # Verify the service is enabled
+  sudo systemctl status pm2-YOUR_USERNAME
+  sudo systemctl enable pm2-YOUR_USERNAME
+  ```
+
+**Bot not responding (application did not respond)?**
+- First, check if the bot process is running:
+  ```bash
+  pm2 status
+  pm2 logs discord-spotify-bot --lines 50
+  ```
+- If pm2 shows no processes, restart it:
+  ```bash
+  cd ~/discord-spotify-bot
+  pm2 start dist/index.js --name discord-spotify-bot
+  pm2 save
+  ```
+
 **OAuth callback not working?**
 - Check firewall allows TCP 8080: `sudo ss -tlnp | grep 8080`
 - Check the bot is running: `pm2 status`

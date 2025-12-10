@@ -23,12 +23,17 @@ sudo apt-get install -y nodejs
 
 # Install ffmpeg and other dependencies
 echo "📦 Installing ffmpeg and dependencies..."
-sudo apt-get install -y ffmpeg python3 curl ca-certificates git
+sudo apt-get install -y ffmpeg python3 curl ca-certificates git build-essential
+
+# Install native audio dependencies for @discordjs/opus
+echo "📦 Installing native audio libraries for Opus..."
+sudo apt-get install -y libtool autoconf automake libopus-dev
 
 # Install yt-dlp
 echo "📦 Installing yt-dlp..."
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod a+rx /usr/local/bin/yt-dlp
+echo "✅ yt-dlp installed at /usr/local/bin/yt-dlp"
 
 # Install pm2 globally
 echo "📦 Installing pm2..."
@@ -97,13 +102,26 @@ fi
 pm2 stop discord-spotify-bot 2>/dev/null || true
 pm2 delete discord-spotify-bot 2>/dev/null || true
 
-# Start with pm2
+# Start with pm2 (with auto-restart on crash)
 echo "🚀 Starting bot with pm2..."
-pm2 start dist/index.js --name discord-spotify-bot
+pm2 start dist/index.js --name discord-spotify-bot --max-restarts 10 --restart-delay 5000
 
-# Save pm2 process list and set up startup script
+# Set up pm2 to start on boot (this is the key for 24/7 operation)
+echo "🔄 Configuring pm2 to start on system boot..."
+
+# Generate the startup command and execute it with sudo
+STARTUP_CMD=$(pm2 startup systemd -u $USER --hp /home/$USER 2>/dev/null | grep "sudo" | head -1)
+if [ -n "$STARTUP_CMD" ]; then
+    echo "Running: $STARTUP_CMD"
+    eval $STARTUP_CMD
+fi
+
+# Save the current process list
 pm2 save
-pm2 startup | tail -1 | bash 2>/dev/null || echo "Run 'pm2 startup' manually if needed"
+
+# Enable and start the pm2 service explicitly
+sudo systemctl enable pm2-$USER 2>/dev/null || true
+sudo systemctl start pm2-$USER 2>/dev/null || true
 
 echo ""
 echo "✅ Deployment complete!"
